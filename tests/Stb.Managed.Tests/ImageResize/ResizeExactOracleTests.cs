@@ -30,6 +30,7 @@ public sealed class ResizeExactOracleTests
             ResizeDataType.UInt8Linear,
             ResizeDataType.UInt8Srgb,
             ResizeDataType.UInt16Linear,
+            ResizeDataType.Fp32,
         ];
 
         (int InW, int InH, int OutW, int OutH)[] sizes =
