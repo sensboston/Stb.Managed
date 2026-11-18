@@ -2441,10 +2441,17 @@ internal static class JpegDecoder
             Span<byte> lb3 = need3 ? scratch.AsSpan(off, lineBufLen) : Span<byte>.Empty;
 
             int rowStride = width * outN;
+            bool fused420 = CanFuse420(ws, isRgb, decodeN, outN, width, r0, r1, r2);
             for (int j = startRow; j < endRow; j++)
             {
                 int localRow = flipVertically ? (rangeEndRow - 1 - j) : (j - rangeStartRow);
                 Span<byte> dst = dstArray.AsSpan(localRow * rowStride, rowStride);
+
+                if (fused420)
+                {
+                    ConvertRowFused420(ws, ref r0, ref r1, ref r2, lb0, dst, width, outN);
+                    continue;
+                }
 
                 ReadOnlySpan<byte> c0 = decodeN > 0 ? ResampleComponentRowSpan(ref r0, ref ws.Components[0], lb0) : ReadOnlySpan<byte>.Empty;
                 ReadOnlySpan<byte> c1 = decodeN > 1 ? ResampleComponentRowSpan(ref r1, ref ws.Components[1], lb1) : ReadOnlySpan<byte>.Empty;
@@ -2463,15 +2470,38 @@ internal static class JpegDecoder
         }
     }
 
+    /// <summary>
+    /// Returns the near/far source row offsets for the next output row and advances the resampler state.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void NextRowOffsets(
+        ref ResampleState r,
+        ref JpegComponent comp,
+        out int nearOffset,
+        out int farOffset)
+    {
+        bool yBot = r.YStep >= (r.Vs >> 1);
+        nearOffset = yBot ? r.Line1Offset : r.Line0Offset;
+        farOffset = yBot ? r.Line0Offset : r.Line1Offset;
+
+        if (++r.YStep >= r.Vs)
+        {
+            r.YStep = 0;
+            r.Line0Offset = r.Line1Offset;
+            if (++r.YPos < comp.Y)
+            {
+                r.Line1Offset += comp.W2;
+            }
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ReadOnlySpan<byte> ResampleComponentRowSpan(
         ref ResampleState r,
         ref JpegComponent comp,
         Span<byte> lineBuf)
     {
-        bool yBot = r.YStep >= (r.Vs >> 1);
-        int nearOffset = yBot ? r.Line1Offset : r.Line0Offset;
-        int farOffset = yBot ? r.Line0Offset : r.Line1Offset;
+        NextRowOffsets(ref r, ref comp, out int nearOffset, out int farOffset);
         byte[] data = comp.Data!;
         int wLores = r.WLores;
 
@@ -2503,17 +2533,61 @@ internal static class JpegDecoder
                 break;
         }
 
-        if (++r.YStep >= r.Vs)
-        {
-            r.YStep = 0;
-            r.Line0Offset = r.Line1Offset;
-            if (++r.YPos < comp.Y)
-            {
-                r.Line1Offset += comp.W2;
-            }
-        }
-
         return result;
+    }
+
+    /// <summary>
+    /// True when a 4:2:0 image (Y full-size, Cb/Cr h2v2) can use the fused upsample+color path.
+    /// Only Arm64 AdvSimd has the fused kernel; every other target keeps the existing two-pass code.
+    /// </summary>
+    private static bool CanFuse420(JpegWorkspace ws, bool isRgb, int decodeN, int outN, int width, ResampleState r0, ResampleState r1, ResampleState r2)
+    {
+#if NET8_0_OR_GREATER
+        return JpegColor.SupportsFused420
+            && decodeN == 3
+            && ws.ImgN == 3
+            && !isRgb
+            && outN >= 3
+            && width >= 32
+            && r0.Mode == ResampleMode.None
+            && r1.Mode == ResampleMode.Hv2
+            && r2.Mode == ResampleMode.Hv2;
+#else
+        return false;
+#endif
+    }
+
+    /// <summary>
+    /// Converts one 4:2:0 output row through the fused kernel. The caller must have checked <see cref="CanFuse420"/>.
+    /// </summary>
+    private static void ConvertRowFused420(
+        JpegWorkspace ws,
+        ref ResampleState r0,
+        ref ResampleState r1,
+        ref ResampleState r2,
+        Span<byte> lineBuf0,
+        Span<byte> dst,
+        int width,
+        int outN)
+    {
+#if NET8_0_OR_GREATER
+        ReadOnlySpan<byte> y = ResampleComponentRowSpan(ref r0, ref ws.Components[0], lineBuf0);
+        NextRowOffsets(ref r1, ref ws.Components[1], out int cbNear, out int cbFar);
+        NextRowOffsets(ref r2, ref ws.Components[2], out int crNear, out int crFar);
+        byte[] cbData = ws.Components[1].Data!;
+        byte[] crData = ws.Components[2].Data!;
+
+        JpegColor.ConvertYCbCr420RowFused(
+            dst,
+            y,
+            cbData.AsSpan(cbNear),
+            cbData.AsSpan(cbFar),
+            crData.AsSpan(crNear),
+            crData.AsSpan(crFar),
+            width,
+            r1.WLores,
+            outN);
+#endif
     }
 
     private static void ResampleAndColorConvert(JpegWorkspace ws, Span<byte> output, int outN, bool flipVertically)
@@ -2561,10 +2635,17 @@ internal static class JpegDecoder
             Span<byte> lb3 = need3 ? scratch.AsSpan(off, lineBufLen) : Span<byte>.Empty;
 
             int rowStride = width * outN;
+            bool fused420 = CanFuse420(ws, isRgb, decodeN, outN, width, r0, r1, r2);
             for (int j = 0; j < height; j++)
             {
                 int dstRow = flipVertically ? (height - 1 - j) : j;
                 Span<byte> dst = output.Slice(dstRow * rowStride, rowStride);
+
+                if (fused420)
+                {
+                    ConvertRowFused420(ws, ref r0, ref r1, ref r2, lb0, dst, width, outN);
+                    continue;
+                }
 
                 ReadOnlySpan<byte> c0 = decodeN > 0 ? ResampleComponentRowSpan(ref r0, ref ws.Components[0], lb0) : ReadOnlySpan<byte>.Empty;
                 ReadOnlySpan<byte> c1 = decodeN > 1 ? ResampleComponentRowSpan(ref r1, ref ws.Components[1], lb1) : ReadOnlySpan<byte>.Empty;

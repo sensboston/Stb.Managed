@@ -1242,6 +1242,224 @@ internal static class JpegColor
         BinaryPrimitives.WriteUInt32LittleEndian(dst.Slice(offset + 8, 4), v.AsUInt32().GetElement(2));
     }
 
+    // -------------------------------------------------------------------------
+    // Arm64 AdvSimd fused 4:2:0 path: h2v2 chroma upsampling + YCbCr -> RGB(A) in one pass.
+    // Produces exactly the bytes of ResampleRowHv2 (Cb, Cr) followed by YCbCrToRgb(a)Row.
+    // -------------------------------------------------------------------------
+
+    internal static bool SupportsFused420 => AdvSimd.Arm64.IsSupported;
+
+    private readonly struct YccConsts
+    {
+        public readonly Vector128<short> C8;
+        public readonly Vector128<short> C128;
+        public readonly Vector128<short> CrR;
+        public readonly Vector128<short> CrG;
+        public readonly Vector128<short> CbG;
+        public readonly Vector128<short> CbB;
+        public readonly Vector128<byte> A8;
+        public readonly Vector128<byte> RgbMask;
+
+        public YccConsts()
+        {
+            C8 = Vector128.Create((short)8);
+            C128 = Vector128.Create((short)128);
+            CrR = Vector128.Create(CrToR16);
+            CrG = Vector128.Create(CrToG16);
+            CbG = Vector128.Create(CbToG16);
+            CbB = Vector128.Create(CbToB16);
+            A8 = Vector128.Create((byte)255);
+            RgbMask = Vector128.Create(
+                (byte)0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 0xFF, 0xFF, 0xFF, 0xFF);
+        }
+    }
+
+    /// <summary>
+    /// Converts one 4:2:0 row: Y is full width, Cb/Cr are half width (<paramref name="wLores"/> = ceil(width / 2)).
+    /// </summary>
+    internal static void ConvertYCbCr420RowFused(
+        Span<byte> output,
+        ReadOnlySpan<byte> y,
+        ReadOnlySpan<byte> cbNear,
+        ReadOnlySpan<byte> cbFar,
+        ReadOnlySpan<byte> crNear,
+        ReadOnlySpan<byte> crFar,
+        int width,
+        int wLores,
+        int outN)
+    {
+        if (wLores < 16
+            || width < (2 * wLores) - 1
+            || width > 2 * wLores
+            || outN < 3
+            || outN > 4
+            || y.Length < width
+            || output.Length < width * outN
+            || cbNear.Length < wLores
+            || cbFar.Length < wLores
+            || crNear.Length < wLores
+            || crFar.Length < wLores)
+        {
+            ThrowBounds();
+        }
+
+        YccConsts k = new();
+
+        // Pixels 0..1 use the exact edge formulas.
+        Yuv420ScalarRange(output, y, cbNear, cbFar, crNear, crFar, wLores, 0, 2, outN);
+
+        // Interior input columns i..i+7 produce output pixels 2i..2i+15; all of them are fully interior.
+        int i = 1;
+        for (; i + 7 <= wLores - 2; i += 8)
+        {
+            Vector128<byte> cb16 = HvUp16(cbNear, cbFar, i, k.C8);
+            Vector128<byte> cr16 = HvUp16(crNear, crFar, i, k.C8);
+            int p = 2 * i;
+            YccHalfStore(output, p * outN, outN, k, Load8Bytes64(y, p), cb16.GetLower(), cr16.GetLower());
+            YccHalfStore(output, (p + 8) * outN, outN, k, Load8Bytes64(y, p + 8), cb16.GetUpper(), cr16.GetUpper());
+        }
+
+        // Remaining pixels (at most 16, including the last edge pixel) use the scalar formulas.
+        Yuv420ScalarRange(output, y, cbNear, cbFar, crNear, crFar, wLores, 2 * i, width, outN);
+    }
+
+    /// <summary>
+    /// Upsamples 8 input columns starting at <paramref name="i"/> into 16 interleaved output chroma bytes.
+    /// Requires 1 &lt;= i and i + 8 &lt;= wLores - 1.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<byte> HvUp16(ReadOnlySpan<byte> near, ReadOnlySpan<byte> far, int i, Vector128<short> c8)
+    {
+        Vector128<short> nPrev = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(near, i - 1)).AsInt16();
+        Vector128<short> fPrev = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(far, i - 1)).AsInt16();
+        Vector128<short> prev = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nPrev, 1), nPrev), fPrev);
+
+        Vector128<short> nCurr = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(near, i)).AsInt16();
+        Vector128<short> fCurr = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(far, i)).AsInt16();
+        Vector128<short> curr = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nCurr, 1), nCurr), fCurr);
+
+        Vector128<short> nNext = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(near, i + 1)).AsInt16();
+        Vector128<short> fNext = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(far, i + 1)).AsInt16();
+        Vector128<short> next = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nNext, 1), nNext), fNext);
+
+        Vector128<short> c3p8 = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(curr, 1), curr), c8);
+        Vector64<byte> e8 = AdvSimd.ExtractNarrowingSaturateUnsignedLower(AdvSimd.ShiftRightArithmetic(AdvSimd.Add(c3p8, prev), 4));
+        Vector64<byte> o8 = AdvSimd.ExtractNarrowingSaturateUnsignedLower(AdvSimd.ShiftRightArithmetic(AdvSimd.Add(c3p8, next), 4));
+        return AdvSimd.Arm64.ZipLow(e8.ToVector128Unsafe(), o8.ToVector128Unsafe());
+    }
+
+    /// <summary>
+    /// Converts 8 pixels (Y, Cb, Cr already expanded to 8 lanes) and stores them as RGBA or RGB at <paramref name="off"/>.
+    /// Same arithmetic as <see cref="YCbCrToRgbaRowAdvSimd"/> / <see cref="YCbCrToRgbRowAdvSimd"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void YccHalfStore(
+        Span<byte> dst,
+        int off,
+        int outN,
+        in YccConsts k,
+        Vector64<byte> y8,
+        Vector64<byte> cb8,
+        Vector64<byte> cr8)
+    {
+        Vector128<short> yw = AdvSimd.Add(AdvSimd.ShiftLeftLogical(AdvSimd.ZeroExtendWideningLower(y8).AsInt16(), 4), k.C8);
+        Vector128<short> cbw = AdvSimd.ShiftLeftLogical(AdvSimd.Subtract(AdvSimd.ZeroExtendWideningLower(cb8).AsInt16(), k.C128), 7);
+        Vector128<short> crw = AdvSimd.ShiftLeftLogical(AdvSimd.Subtract(AdvSimd.ZeroExtendWideningLower(cr8).AsInt16(), k.C128), 7);
+
+        Vector128<short> crR = AdvSimd.MultiplyDoublingSaturateHigh(crw, k.CrR);
+        Vector128<short> crG = AdvSimd.MultiplyDoublingSaturateHigh(crw, k.CrG);
+        Vector128<short> cbG = AdvSimd.MultiplyDoublingSaturateHigh(cbw, k.CbG);
+        Vector128<short> cbB = AdvSimd.MultiplyDoublingSaturateHigh(cbw, k.CbB);
+
+        Vector64<byte> r8 = AdvSimd.ExtractNarrowingSaturateUnsignedLower(AdvSimd.ShiftRightArithmetic(AdvSimd.Add(yw, crR), 4));
+        Vector64<byte> g8 = AdvSimd.ExtractNarrowingSaturateUnsignedLower(AdvSimd.ShiftRightArithmetic(AdvSimd.Add(yw, AdvSimd.Add(crG, cbG)), 4));
+        Vector64<byte> b8 = AdvSimd.ExtractNarrowingSaturateUnsignedLower(AdvSimd.ShiftRightArithmetic(AdvSimd.Add(yw, cbB), 4));
+
+        Vector128<byte> rg = AdvSimd.Arm64.ZipLow(r8.ToVector128Unsafe(), g8.ToVector128Unsafe());
+        Vector128<byte> ba = AdvSimd.Arm64.ZipLow(b8.ToVector128Unsafe(), k.A8);
+        Vector128<byte> rgba0 = AdvSimd.Arm64.ZipLow(rg.AsUInt16(), ba.AsUInt16()).AsByte();
+        Vector128<byte> rgba1 = AdvSimd.Arm64.ZipHigh(rg.AsUInt16(), ba.AsUInt16()).AsByte();
+
+        if (outN == 4)
+        {
+            rgba0.CopyTo(dst.Slice(off, 16));
+            rgba1.CopyTo(dst.Slice(off + 16, 16));
+            return;
+        }
+
+        Vector128<byte> c0 = AdvSimd.Arm64.VectorTableLookup(rgba0, k.RgbMask);
+        Vector128<byte> c1 = AdvSimd.Arm64.VectorTableLookup(rgba1, k.RgbMask);
+        c0.CopyTo(dst.Slice(off, 16));
+        if (off + 28 <= dst.Length)
+        {
+            c1.CopyTo(dst.Slice(off + 12, 16));
+        }
+        else
+        {
+            Store12Bytes(dst, off + 12, c1);
+        }
+    }
+
+    /// <summary>
+    /// Scalar fused conversion for output pixels [<paramref name="start"/>, <paramref name="end"/>).
+    /// </summary>
+    private static void Yuv420ScalarRange(
+        Span<byte> output,
+        ReadOnlySpan<byte> y,
+        ReadOnlySpan<byte> cbNear,
+        ReadOnlySpan<byte> cbFar,
+        ReadOnlySpan<byte> crNear,
+        ReadOnlySpan<byte> crFar,
+        int wLores,
+        int start,
+        int end,
+        int outN)
+    {
+        int count = end - start;
+        if (count <= 0)
+        {
+            return;
+        }
+
+        Span<byte> cb = stackalloc byte[count];
+        Span<byte> cr = stackalloc byte[count];
+        for (int n = 0; n < count; n++)
+        {
+            int x = start + n;
+            cb[n] = HvUpScalar(cbNear, cbFar, x, wLores);
+            cr[n] = HvUpScalar(crNear, crFar, x, wLores);
+        }
+
+        YCbCrToRgbRowScalar(output.Slice(start * outN), y.Slice(start, count), cb, cr, count, outN);
+    }
+
+    /// <summary>
+    /// One output chroma sample of the h2v2 "triangle" filter, using the exact edge rules of ResampleRowHv2.
+    /// </summary>
+    private static byte HvUpScalar(ReadOnlySpan<byte> near, ReadOnlySpan<byte> far, int x, int w)
+    {
+        if (x == 0)
+        {
+            return (byte)((((3 * near[0]) + far[0]) + 2) >> 2);
+        }
+
+        if (x == (2 * w) - 1)
+        {
+            return (byte)((((3 * near[w - 1]) + far[w - 1]) + 2) >> 2);
+        }
+
+        int i = x >> 1;
+        int cur = (3 * near[i]) + far[i];
+        if ((x & 1) == 0)
+        {
+            int prev = (3 * near[i - 1]) + far[i - 1];
+            return (byte)(((3 * cur) + prev + 8) >> 4);
+        }
+
+        int next = (3 * near[i + 1]) + far[i + 1];
+        return (byte)(((3 * cur) + next + 8) >> 4);
+    }
+
     private static void ThrowBounds() =>
         throw new StbException(StbErrorCode.InternalError, "Color conversion buffer bounds check failed.");
 #endif
