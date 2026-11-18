@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Resize: horizontal filters read the same fixed-width windows as stb (clipped reads, zero-weight slots),
+  so 8- and 16-bit output now equals stb byte for byte for every pixel layout, including one channel.
+- JPEG on Arm64: 4:2:0 chroma upsampling fused with YCbCr conversion and widened once per row; baseline
+  block decoder kept out of line (about 19% faster on Neoverse-N1, 3–4% on x64).
+
 ## 1.0.2 - 2026-11-18
 
 - TrueType: `BakeFontBitmap` treats a glyph whose box is inverted (x1 < x0 or y1 < y0) as empty instead of
