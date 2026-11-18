@@ -130,7 +130,7 @@ compiler).
 
 - Decoders produce the same pixels as stb (JPEG uses stb's integer IDCT).
 - Resize: 8- and 16-bit output equals `stb_image_resize2` byte for byte for every pixel layout (same
-  coefficient packing and float summation order); `Fp32` output can differ in the last bit of a float.
+  coefficient packing and float summation order), and `Fp32` output equals it bit for bit.
 - BMP, TGA, HDR, JPEG and PNG with `PngCompressionEngine.StbCompatible` are byte-identical to
   `stb_image_write`. The default PNG engine uses zlib: about 28% smaller files, and faster.
 - DXT, Perlin and the PSD matte correction match stb built without FMA contraction.
