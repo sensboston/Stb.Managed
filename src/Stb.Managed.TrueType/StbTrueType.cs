@@ -173,8 +173,13 @@ public static class StbTrueType
             int g = font.FindGlyphIndex(firstChar + i);
             GlyphHMetrics hm = font.GetGlyphHMetrics(g);
             GlyphBitmapBox box = font.GetGlyphBitmapBox(g, scale, scale);
-            int gw = box.Width;
-            int gh = box.Height;
+            // A malformed glyph box (x1 < x0 or y1 < y0) is an empty glyph; one wider than the atlas cannot fit.
+            int gw = Math.Max(box.Width, 0);
+            int gh = Math.Max(box.Height, 0);
+            if (gw + 2 > width)
+            {
+                return -i;
+            }
 
             if (x + gw + 1 >= width)
             {

@@ -104,6 +104,31 @@ public sealed class TrueTypeMalformedAndLimitsTests
     }
 
     [Fact]
+    public void BakeFontBitmapTreatsAnInvertedGlyphBoxAsEmpty()
+    {
+        // Found by fuzzing: three bytes changed in Karla-Regular.ttf give a glyph whose box has x1 < x0.
+        // The negative width used to move the atlas position below zero and throw ArgumentOutOfRangeException.
+        string? fullPath = CorpusHelper.TryGetFontPath("fonts/imgui/misc/fonts/Karla-Regular.ttf");
+        if (fullPath is null)
+        {
+            Assert.False(CorpusHelper.IsRunningInCi, "Karla-Regular.ttf is missing in CI.");
+            return;
+        }
+
+        byte[] data = File.ReadAllBytes(fullPath);
+        data[1594] = 0x02;
+        data[4269] = 0x46;
+        data[4762] = 0x40;
+        int offset = StbTrueType.GetFontOffsetForIndex(data, 0);
+        byte[] atlas = new byte[128 * 128];
+        var baked = new BakedChar[8];
+
+        int result = StbTrueType.BakeFontBitmap(data, offset, 16.0f, atlas, 128, 128, 'A', baked);
+
+        Assert.NotEqual(-1, result);
+    }
+
+    [Fact]
     public void StbLimitsAreEnforcedAcrossApis()
     {
         string? fullPath = CorpusHelper.TryGetFontPath("fonts/imgui/misc/fonts/Roboto-Medium.ttf");

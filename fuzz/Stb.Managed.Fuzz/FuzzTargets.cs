@@ -6,6 +6,14 @@ using Stb.Managed.TrueType;
 
 namespace Stb.Managed.Fuzz;
 
+/// <summary>How far fuzz inputs got: counts of outcomes per target, printed at the end of a run.</summary>
+internal static class FuzzStats
+{
+    internal static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> Outcomes = new(StringComparer.Ordinal);
+
+    internal static void Record(string outcome) => Outcomes.AddOrUpdate(outcome, 1, (_, n) => n + 1);
+}
+
 internal interface IFuzzTarget
 {
     string Name { get; }
@@ -88,6 +96,7 @@ internal sealed class ImageFuzzTarget : IFuzzTarget
             }
 
             _ = StbImage.Load(data, ColorComponents.Default, FuzzTargets.FuzzDecodeOptions);
+            FuzzStats.Record($"decoded {fmt}");
 
             if (fmt == ImageFormat.Gif)
             {
@@ -102,9 +111,10 @@ internal sealed class ImageFuzzTarget : IFuzzTarget
                 _ = StbImage.Load16(data, ColorComponents.Default, FuzzTargets.FuzzDecodeOptions);
             }
         }
-        catch (StbException)
+        catch (StbException e)
         {
             // Expected on malformed or over-budget hostile inputs.
+            FuzzStats.Record($"rejected {StbImage.DetectFormat(data)} {e.Code}");
         }
     }
 }
@@ -129,12 +139,14 @@ internal sealed class TrueTypeFuzzTarget : IFuzzTarget
             int count = StbTrueType.GetNumberOfFonts(copy);
             if (count <= 0)
             {
+                FuzzStats.Record("not a font");
                 return;
             }
 
             int offset = StbTrueType.GetFontOffsetForIndex(copy, 0);
             if (offset < 0 || !StbTrueTypeFont.TryLoad(copy, offset, out StbTrueTypeFont? font, FuzzTargets.FuzzOptions) || font is null)
             {
+                FuzzStats.Record("font tables rejected");
                 return;
             }
 
@@ -156,10 +168,12 @@ internal sealed class TrueTypeFuzzTarget : IFuzzTarget
             byte[] atlas = new byte[128 * 128];
             Span<BakedChar> baked = stackalloc BakedChar[8];
             _ = StbTrueType.BakeFontBitmap(copy, offset, 16.0f, atlas, 128, 128, 'A', baked, FuzzTargets.FuzzOptions);
+            FuzzStats.Record("glyphs rendered and baked");
         }
-        catch (StbException)
+        catch (StbException e)
         {
             // Expected on malformed font tables or budget exhaustion.
+            FuzzStats.Record($"rejected {e.Code}");
         }
     }
 }

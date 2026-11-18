@@ -34,7 +34,8 @@ for giving it away.
   runs, including containers, cloud functions, Unity, MonoGame and FNA (`netstandard2.1`).
 - **Safe on hostile input.** Every read is bounds-checked; dimensions, pixel counts and allocations
   are capped by `StbLimits` before any work starts. A malformed file ends in a typed
-  `StbException`, never in memory corruption. The decoders are fuzzed weekly in CI.
+  `StbException`, never in memory corruption. All seven libraries are
+  mutation-fuzzed in CI every week, seeded with the test corpus.
 - **The same results.** The CPU code follows stb operation by operation, including the order of
   floating-point sums; decoders, encoders and resize produce the same bytes as the C library.
 - **Faster.** Hot paths use `Vector128/256/512` and hardware intrinsics (AVX2, AVX-512, SSE, NEON),

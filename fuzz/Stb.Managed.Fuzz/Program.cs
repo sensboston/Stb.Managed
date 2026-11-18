@@ -41,7 +41,7 @@ return 0;
 static int RunSelfTest(string? corpusDir)
 {
     var rng = new Random(0x57B_F022);
-    List<byte[]> seeds = BuildBuiltinSeeds(corpusDir);
+    List<byte[]> seeds = BuildBuiltinSeeds(corpusDir, "all");
     Console.WriteLine($"Running SharpFuzz harness self-test across {FuzzTargets.All.Length} targets ({seeds.Count} seeds)...");
 
     foreach (IFuzzTarget target in FuzzTargets.All)
@@ -79,7 +79,7 @@ static int RunSelfTest(string? corpusDir)
 static int RunMutationLoop(string targetName, int seconds, string? seedDir, string? crashDir)
 {
     IFuzzTarget target = FuzzTargets.GetByName(targetName);
-    List<byte[]> seeds = BuildBuiltinSeeds(seedDir);
+    List<byte[]> seeds = BuildBuiltinSeeds(seedDir, targetName);
     var rng = new Random(Environment.TickCount ^ targetName.GetHashCode(StringComparison.Ordinal));
     var sw = Stopwatch.StartNew();
     long execs = 0;
@@ -106,10 +106,15 @@ static int RunMutationLoop(string targetName, int seconds, string? seedDir, stri
     }
 
     Console.WriteLine($"Fuzz target '{target.Name}' completed cleanly: {execs:N0} executions in {sw.Elapsed.TotalSeconds:F1}s ({execs / Math.Max(0.01, sw.Elapsed.TotalSeconds):N0} exec/s).");
+    foreach ((string outcome, long count) in FuzzStats.Outcomes.OrderByDescending(o => o.Value).Take(25))
+    {
+        Console.WriteLine($"  {count,14:N0}  {outcome}");
+    }
+
     return 0;
 }
 
-static List<byte[]> BuildBuiltinSeeds(string? corpusDir)
+static List<byte[]> BuildBuiltinSeeds(string? corpusDir, string targetName)
 {
     List<byte[]> seeds =
     [
@@ -135,21 +140,27 @@ static List<byte[]> BuildBuiltinSeeds(string? corpusDir)
     seeds.Add(Stb.Managed.StbImageWrite.WriteBmp(tiny, 16, 16, Stb.Managed.ColorComponents.RedGreenBlueAlpha));
     seeds.Add(Stb.Managed.StbImageWrite.WriteTga(tiny, 16, 16, Stb.Managed.ColorComponents.RedGreenBlueAlpha));
 
+    // Every corpus file up to 1 MB that fits the target: images for the decoders, fonts for TrueType.
     if (!string.IsNullOrEmpty(corpusDir) && Directory.Exists(corpusDir))
     {
-        int added = 0;
-        foreach (string path in Directory.EnumerateFiles(corpusDir, "*", SearchOption.AllDirectories))
+        foreach (string path in Directory.EnumerateFiles(corpusDir, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
         {
-            if (added >= 24)
+            var fi = new FileInfo(path);
+            if (fi.Length == 0 || fi.Length > 1024 * 1024)
             {
-                break;
+                continue;
             }
 
-            var fi = new FileInfo(path);
-            if (fi.Length > 0 && fi.Length <= 256 * 1024)
+            byte[] data = File.ReadAllBytes(path);
+            bool fits = targetName switch
             {
-                seeds.Add(File.ReadAllBytes(path));
-                added++;
+                "image" => Stb.Managed.StbImage.DetectFormat(data) != Stb.Managed.ImageFormat.Unknown,
+                "truetype" => path.EndsWith(".ttf", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".otf", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".ttc", StringComparison.OrdinalIgnoreCase),
+                _ => true,
+            };
+            if (fits)
+            {
+                seeds.Add(data);
             }
         }
     }
