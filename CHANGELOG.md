@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 - 2026-11-17
+
+- Package icon.
+- Resize: faster fancy-alpha unweighting and RGBA8 encoding, and a direct path for four-tap horizontal
+  filters (upsampling about 16% faster on one thread); output unchanged.
+
 ## 1.0.0 - 2026-11-17
 
 First release.

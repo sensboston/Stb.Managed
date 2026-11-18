@@ -40,6 +40,7 @@ internal static class VerifyPackages
         using (ZipArchive meta = Open(dir, "Stb.Managed", "nupkg"))
         {
             Require(meta.GetEntry("README.md") is not null, "Stb.Managed: README.md missing");
+            Require(meta.GetEntry("icon.png") is not null, "Stb.Managed: icon.png missing");
             var groups = Dependencies(meta, "Stb.Managed");
             Require(groups.Count > 0, "Stb.Managed: no dependency groups");
             foreach ((string tfm, HashSet<string> deps) in groups)
@@ -64,6 +65,7 @@ internal static class VerifyPackages
         using (ZipArchive package = Open(dir, id, "nupkg"))
         {
             Require(package.GetEntry("README.md") is not null, $"{id}: README.md missing");
+            Require(package.GetEntry("icon.png") is not null, $"{id}: icon.png missing");
             foreach (string tfm in targets)
             {
                 Require(package.GetEntry($"lib/{tfm}/{id}.dll") is not null, $"{id}: lib/{tfm}/{id}.dll missing");
@@ -103,6 +105,7 @@ internal static class VerifyPackages
         Require(Text("id") == id, $"{id}: nuspec id is {Text("id")}");
         Require(Text("license") == "MIT", $"{id}: license is not MIT");
         Require(Text("readme") == "README.md", $"{id}: readme is not README.md");
+        Require(Text("icon") == "icon.png", $"{id}: icon is not icon.png");
         return metadata.Descendants().Where(e => e.Name.LocalName == "group").ToDictionary(
             g => (string?)g.Attribute("targetFramework") ?? string.Empty,
             g => g.Elements().Where(d => d.Name.LocalName == "dependency").Select(d => (string)d.Attribute("id")!).ToHashSet(StringComparer.Ordinal));
