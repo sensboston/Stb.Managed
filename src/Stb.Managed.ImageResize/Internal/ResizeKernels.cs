@@ -914,6 +914,54 @@ internal static class ResizeKernels
         Span<Vector256<float>> outV = MemoryMarshal.Cast<float, Vector256<float>>(output).Slice(0, sliceOutW);
 
         int lx = 0;
+
+        // Up to 17 taps every contributor reads exactly `widest` slots, so a whole row runs on one window
+        // length: pairs of outputs with no per-pixel extent logic, chains even/odd as stb's kernels sum them.
+        if (widest >= 5 && widest <= 17 && widest <= coeffWidth)
+        {
+            int r = widest;
+            int pairTaps = (r - 2) & ~1;
+            for (; lx + 1 < outV.Length; lx += 2)
+            {
+                int x = sliceOutX + lx;
+                ResizeContributor c0 = contribs[x];
+                ResizeContributor c1 = contribs[x + 1];
+                if (c0.N1 < c0.N0 || c1.N1 < c1.N0)
+                {
+                    break;
+                }
+
+                ReadOnlySpan<Vector256<float>> a = inV.Slice(c0.N0 - sliceInN0, r);
+                ReadOnlySpan<Vector256<float>> b = inV.Slice(c1.N0 - sliceInN0, r);
+                ReadOnlySpan<float> wa = coeffs.Slice(x * coeffWidth, r);
+                ReadOnlySpan<float> wb = coeffs.Slice((x + 1) * coeffWidth, r);
+                Vector256<float> ae = a[0] * Vector256.Create(wa[0]);
+                Vector256<float> ao = a[1] * Vector256.Create(wa[1]);
+                Vector256<float> be = b[0] * Vector256.Create(wb[0]);
+                Vector256<float> bo = b[1] * Vector256.Create(wb[1]);
+                ReadOnlySpan<VPair> pa = MemoryMarshal.Cast<Vector256<float>, VPair>(a.Slice(2, pairTaps));
+                ReadOnlySpan<VPair> pb = MemoryMarshal.Cast<Vector256<float>, VPair>(b.Slice(2, pairTaps)).Slice(0, pa.Length);
+                ReadOnlySpan<FPair> pwa = MemoryMarshal.Cast<float, FPair>(wa.Slice(2, pairTaps)).Slice(0, pa.Length);
+                ReadOnlySpan<FPair> pwb = MemoryMarshal.Cast<float, FPair>(wb.Slice(2, pairTaps)).Slice(0, pa.Length);
+                for (int k = 0; k < pa.Length; k++)
+                {
+                    ae += pa[k].E * Vector256.Create(pwa[k].E);
+                    be += pb[k].E * Vector256.Create(pwb[k].E);
+                    ao += pa[k].O * Vector256.Create(pwa[k].O);
+                    bo += pb[k].O * Vector256.Create(pwb[k].O);
+                }
+
+                if ((r & 1) != 0)
+                {
+                    ae += a[r - 1] * Vector256.Create(wa[r - 1]);
+                    be += b[r - 1] * Vector256.Create(wb[r - 1]);
+                }
+
+                outV[lx] = ae + ao;
+                outV[lx + 1] = be + bo;
+            }
+        }
+
         while (lx < outV.Length)
         {
             int x = sliceOutX + lx;
