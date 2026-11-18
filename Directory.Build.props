@@ -19,7 +19,7 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(StbIsLibrary)' == 'true'">
-    <VersionPrefix>1.0.1</VersionPrefix>
+    <VersionPrefix>1.0.2</VersionPrefix>
     <TargetFrameworks Condition="'$(StbIsGpuLibrary)' != 'true'">$(StbLibraryTargets)</TargetFrameworks>
     <TargetFrameworks Condition="'$(StbIsGpuLibrary)' == 'true'">$(StbTestTargets)</TargetFrameworks>
     <IsPackable>true</IsPackable>

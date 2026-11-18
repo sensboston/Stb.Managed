@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2 - 2026-11-18
+
+- TrueType: `BakeFontBitmap` treats a glyph whose box is inverted (x1 < x0 or y1 < y0) as empty instead of
+  throwing `ArgumentOutOfRangeException` (found by fuzzing a font with three changed bytes).
+- Fuzzing seeds every target with the whole test corpus and reports how far the inputs get.
+
 ## 1.0.1 - 2026-11-17
 
 - Package icon.
