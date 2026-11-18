@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Fully managed image decoder (JPEG, PNG, BMP, TGA, GIF, PSD, HDR, PIC, PNM), a port of stb_image.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Stb.Managed.Tests" />
+  </ItemGroup>
+</Project>

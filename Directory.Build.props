@@ -1,0 +1,47 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <IsPackable>false</IsPackable>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+
+    <!-- Library targets: net8.0 and net10.0 carry the hardware-intrinsics paths; netstandard2.1 is the
+         portable build for Unity, MonoGame and FNA (scalar and Vector<T> paths only). -->
+    <StbLibraryTargets>net8.0;net10.0;netstandard2.1</StbLibraryTargets>
+    <StbTestTargets>net8.0;net10.0</StbTestTargets>
+    <StbIsLibrary Condition="$(MSBuildProjectDirectory.Replace('\', '/').Contains('/src/'))">true</StbIsLibrary>
+    <StbIsGpuLibrary Condition="'$(MSBuildProjectName)' == 'Stb.Managed.Gpu'">true</StbIsGpuLibrary>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(StbIsLibrary)' == 'true'">
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <TargetFrameworks Condition="'$(StbIsGpuLibrary)' != 'true'">$(StbLibraryTargets)</TargetFrameworks>
+    <TargetFrameworks Condition="'$(StbIsGpuLibrary)' == 'true'">$(StbTestTargets)</TargetFrameworks>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Authors>SeNS</Authors>
+    <Copyright>Copyright (c) 2026 SeNS</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>stb;image;png;jpeg;bmp;tga;gif;psd;hdr;resize;truetype;font;sdf;rectpack;dxt;bc1;bc3;bc4;bc5;perlin;noise;gpu;ilgpu;cuda;opencl;managed;simd;aot;netstandard</PackageTags>
+    <RepositoryUrl>https://github.com/sensboston/Stb.Managed</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/sensboston/Stb.Managed</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(StbIsLibrary)' == 'true' and '$(StbIsGpuLibrary)' != 'true' and '$(TargetFramework)' != 'netstandard2.1'">
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(StbIsLibrary)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+</Project>

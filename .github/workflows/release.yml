@@ -1,0 +1,120 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to build (e.g. 1.0.0 or 1.0.0-rc.1). Defaults to VersionPrefix in Directory.Build.props."
+        required: false
+        default: ""
+      dry_run:
+        description: "Build, test, pack, and validate without pushing to NuGet.org or creating a GitHub Release"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  id-token: write  # NuGet trusted publishing
+
+jobs:
+  pack-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      STB_ORACLE_PATH: ${{ github.workspace }}/native/build/out
+      STB_CORPUS_DIR: ${{ github.workspace }}/artifacts/corpus
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Determine release version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="$(dotnet msbuild src/Stb.Managed.Core/Stb.Managed.Core.csproj -getProperty:VersionPrefix -p:TargetFramework=net10.0)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${VERSION}"
+
+      - name: Build native stb oracle
+        shell: bash
+        run: |
+          cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native/build --config Release
+
+      - name: Fetch and verify test corpus
+        shell: bash
+        run: dotnet run --project tools/Stb.Managed.Tools -c Release -- fetch-corpus
+
+      - name: Build and run full test suites (net8.0, net10.0, netstandard2.1)
+        shell: bash
+        run: |
+          dotnet build Stb.Managed.sln -c Release -p:Version=${{ steps.ver.outputs.version }}
+          dotnet test tests/Stb.Managed.Tests -c Release -f net8.0 --no-build
+          dotnet test tests/Stb.Managed.Tests -c Release -f net10.0 --no-build
+          dotnet test tests/Stb.Managed.Tests -c Release -f net8.0 -p:TestNetStandard=true
+
+      - name: Run Native AOT sample verification
+        shell: bash
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+          fi
+          dotnet publish samples/Stb.Managed.Samples.ImageTool -c Release -r linux-x64 -p:StbPublishAot=true -o artifacts/aot/imagetool
+          dotnet publish samples/Stb.Managed.Samples.FontAtlas -c Release -r linux-x64 -p:StbPublishAot=true -o artifacts/aot/fontatlas
+          ./artifacts/aot/imagetool/Stb.Managed.Samples.ImageTool --self-test
+          ./artifacts/aot/fontatlas/Stb.Managed.Samples.FontAtlas --self-test artifacts/corpus/fonts/imgui/misc/fonts/Roboto-Medium.ttf
+
+      - name: Pack and validate all 10 NuGet packages
+        shell: bash
+        run: |
+          dotnet pack Stb.Managed.sln -c Release --no-build -p:Version=${{ steps.ver.outputs.version }} -o artifacts/packages
+          dotnet run --project tools/Stb.Managed.Tools -c Release -- verify-packages artifacts/packages
+          ls -lh artifacts/packages
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stb-managed-packages-${{ steps.ver.outputs.version }}
+          path: artifacts/packages/
+
+      - name: NuGet login (trusted publishing)
+        if: github.event_name == 'push' || inputs.dry_run == false
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: sensboston
+
+      - name: Push NuGet packages to NuGet.org
+        if: github.event_name == 'push' || inputs.dry_run == false
+        shell: bash
+        run: |
+          for pkg in artifacts/packages/*.nupkg; do
+            echo "Pushing $(basename "$pkg")..."
+            dotnet nuget push "$pkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          done
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" artifacts/packages/*.nupkg artifacts/packages/*.snupkg \
+            --title "Stb.Managed $TAG" \
+            --notes-file CHANGELOG.md

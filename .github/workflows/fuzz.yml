@@ -1,0 +1,70 @@
+name: fuzz
+
+on:
+  schedule:
+    # Weekly scheduled fuzzing run (Sunday 03:00 UTC)
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Fuzz target (all, image, truetype, imagewrite, imageresize, rectpack, dxt, perlin)"
+        required: true
+        default: "all"
+      duration_seconds:
+        description: "Fuzzing duration per target in seconds"
+        required: true
+        default: "60"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STB_CORPUS_DIR: ${{ github.workspace }}/artifacts/corpus
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Fetch seed corpus
+        shell: bash
+        run: dotnet run --project tools/Stb.Managed.Tools -c Release -- fetch-corpus
+
+      - name: Publish SharpFuzz harness and verify IL instrumentation
+        shell: bash
+        run: |
+          dotnet tool install --global SharpFuzz.CommandLine || true
+          export PATH="$HOME/.dotnet/tools:$PATH"
+          dotnet publish fuzz/Stb.Managed.Fuzz -c Release -o artifacts/fuzz-bin
+          for dll in artifacts/fuzz-bin/Stb.Managed.*.dll; do
+            echo "Instrumenting $(basename "$dll") with SharpFuzz..."
+            sharpfuzz "$dll"
+          done
+
+      - name: Run fuzzing targets
+        shell: bash
+        run: |
+          TARGETS="${{ inputs.target || 'all' }}"
+          DURATION="${{ inputs.duration_seconds || '60' }}"
+          if [ "$TARGETS" = "all" ]; then
+            TARGET_LIST="image truetype imagewrite imageresize rectpack dxt perlin"
+          else
+            TARGET_LIST="$TARGETS"
+          fi
+          mkdir -p artifacts/fuzz-crashes
+          for t in $TARGET_LIST; do
+            echo "=== Fuzzing target: $t (${DURATION}s) ==="
+            dotnet artifacts/fuzz-bin/Stb.Managed.Fuzz.dll --mutate "$t" "$DURATION" "$STB_CORPUS_DIR" artifacts/fuzz-crashes
+          done
+
+      - name: Upload crash inputs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: artifacts/fuzz-crashes/
+          if-no-files-found: ignore

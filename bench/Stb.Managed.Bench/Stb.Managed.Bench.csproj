@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Image\Stb.Managed.Image.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.ImageWrite\Stb.Managed.ImageWrite.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.ImageResize\Stb.Managed.ImageResize.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.TrueType\Stb.Managed.TrueType.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.RectPack\Stb.Managed.RectPack.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Dxt\Stb.Managed.Dxt.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Perlin\Stb.Managed.Perlin.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Gpu\Stb.Managed.Gpu.csproj" />
+  </ItemGroup>
+
+</Project>

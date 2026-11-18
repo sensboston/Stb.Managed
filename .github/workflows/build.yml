@@ -1,0 +1,98 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Full 3-OS matrix (incl. macOS Arm64) on pull requests, main pushes, and manual dispatches.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        tfm: [net8.0, net10.0]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      STB_ORACLE_PATH: ${{ github.workspace }}/native/build/out
+      STB_CORPUS_DIR: ${{ github.workspace }}/artifacts/corpus
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Build native stb oracle
+        shell: bash
+        run: |
+          cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native/build --config Release
+          ls -la native/build/out
+
+      - name: Fetch and verify test corpus
+        shell: bash
+        run: dotnet run --project tools/Stb.Managed.Tools -c Release -- fetch-corpus
+
+      - name: Build solution
+        shell: bash
+        run: dotnet build Stb.Managed.sln -c Release
+
+      - name: Run tests (${{ matrix.tfm }})
+        shell: bash
+        run: dotnet test tests/Stb.Managed.Tests -c Release -f ${{ matrix.tfm }} --no-build --logger "trx;LogFileName=results.trx"
+
+      - name: Run fallback SIMD path tests (ubuntu, ${{ matrix.tfm }})
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          DOTNET_EnableAVX512F=0 dotnet test tests/Stb.Managed.Tests -c Release -f ${{ matrix.tfm }} --no-build
+          DOTNET_EnableAVX2=0 dotnet test tests/Stb.Managed.Tests -c Release -f ${{ matrix.tfm }} --no-build
+          DOTNET_EnableHWIntrinsic=0 dotnet test tests/Stb.Managed.Tests -c Release -f ${{ matrix.tfm }} --no-build
+
+      - name: Run tests against netstandard2.1 libraries (net8.0 host)
+        if: matrix.tfm == 'net8.0'
+        shell: bash
+        run: dotnet test tests/Stb.Managed.Tests -c Release -f net8.0 -p:TestNetStandard=true
+
+      - name: Build and run sample apps & fuzz harness self-test (managed, ${{ matrix.tfm }})
+        if: matrix.tfm == 'net10.0'
+        shell: bash
+        run: |
+          dotnet run --project samples/Stb.Managed.Samples.ImageTool -c Release -- --self-test
+          dotnet run --project samples/Stb.Managed.Samples.FontAtlas -c Release -- --self-test artifacts/corpus/fonts/imgui/misc/fonts/Roboto-Medium.ttf
+          dotnet run --project samples/Stb.Managed.Samples.FontAtlas -c Release -- --self-test artifacts/corpus/fonts/source-code-pro/OTF/SourceCodePro-Regular.otf
+          dotnet run --project samples/Stb.Managed.Samples.GpuDemo -c Release -- --self-test artifacts/corpus/fonts/imgui/misc/fonts/Roboto-Medium.ttf
+          dotnet run --project fuzz/Stb.Managed.Fuzz -c Release -- --self-test artifacts/corpus
+
+      - name: Native AOT & trimming audit (publish + execute samples, ubuntu net10.0)
+        if: matrix.os == 'ubuntu-latest' && matrix.tfm == 'net10.0'
+        shell: bash
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+          fi
+          dotnet publish samples/Stb.Managed.Samples.ImageTool -c Release -r linux-x64 -p:StbPublishAot=true -o artifacts/aot/imagetool
+          dotnet publish samples/Stb.Managed.Samples.FontAtlas -c Release -r linux-x64 -p:StbPublishAot=true -o artifacts/aot/fontatlas
+          ls -lh artifacts/aot/imagetool/Stb.Managed.Samples.ImageTool artifacts/aot/fontatlas/Stb.Managed.Samples.FontAtlas
+          ./artifacts/aot/imagetool/Stb.Managed.Samples.ImageTool --self-test
+          ./artifacts/aot/fontatlas/Stb.Managed.Samples.FontAtlas --self-test artifacts/corpus/fonts/imgui/misc/fonts/Roboto-Medium.ttf
+          ./artifacts/aot/fontatlas/Stb.Managed.Samples.FontAtlas --self-test artifacts/corpus/fonts/source-code-pro/OTF/SourceCodePro-Regular.otf
+
+      - name: Pack and validate NuGet packages
+        if: matrix.os == 'ubuntu-latest' && matrix.tfm == 'net10.0'
+        shell: bash
+        run: |
+          dotnet pack Stb.Managed.sln -c Release --no-build -o artifacts/packages
+          dotnet run --project tools/Stb.Managed.Tools -c Release -- verify-packages artifacts/packages
+

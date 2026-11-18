@@ -1,0 +1,42 @@
+name: benchmarks
+
+# The benchmark stand (bench/run.sh) on hosted runners: x64 (usually AVX-512 capable) and Apple silicon.
+# Hosted runners share hardware, so these numbers are indicative; the results zip feeds `Stb.Managed.Tools report`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Case name filter (empty = all cases)"
+        required: false
+        default: ""
+
+jobs:
+  stand:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Corpus
+        run: |
+          dotnet run --project tools/Stb.Managed.Tools -c Release -- fetch-bench-corpus
+
+      - name: Stand
+        run: bash bench/run.sh --skip-gpu ${{ inputs.filter != '' && format('--filter {0}', inputs.filter) || '' }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results-${{ matrix.os }}
+          path: bench/results/

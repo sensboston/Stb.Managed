@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- P/Invoke bindings to the native stb libraries built from the pinned commits (native/): the
+       reference the managed ports are compared with in tests and benchmarks. Never shipped. -->
+  <PropertyGroup>
+    <TargetFrameworks>$(StbTestTargets)</TargetFrameworks>
+    <!-- Required by [LibraryImport] source generator and direct native pointer copies in this test-only project. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

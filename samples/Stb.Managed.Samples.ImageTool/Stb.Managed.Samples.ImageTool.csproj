@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <PublishAot Condition="'$(StbPublishAot)' == 'true'">true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Image\Stb.Managed.Image.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.ImageWrite\Stb.Managed.ImageWrite.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.ImageResize\Stb.Managed.ImageResize.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Dxt\Stb.Managed.Dxt.csproj" />
+    <ProjectReference Include="..\..\src\Stb.Managed.Perlin\Stb.Managed.Perlin.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Fully managed Perlin noise, a port of stb_perlin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Stb.Managed.Gpu" />
+  </ItemGroup>
+</Project>

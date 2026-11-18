@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Metapackage: no code of its own, depends on every Stb.Managed library. -->
+  <PropertyGroup>
+    <Description>All Stb.Managed libraries: fully managed, optimized ports of the stb single-file libraries.</Description>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+    <ProjectReference Include="..\Stb.Managed.Image\Stb.Managed.Image.csproj" />
+    <ProjectReference Include="..\Stb.Managed.ImageWrite\Stb.Managed.ImageWrite.csproj" />
+    <ProjectReference Include="..\Stb.Managed.ImageResize\Stb.Managed.ImageResize.csproj" />
+    <ProjectReference Include="..\Stb.Managed.TrueType\Stb.Managed.TrueType.csproj" />
+    <ProjectReference Include="..\Stb.Managed.RectPack\Stb.Managed.RectPack.csproj" />
+    <ProjectReference Include="..\Stb.Managed.Dxt\Stb.Managed.Dxt.csproj" />
+    <ProjectReference Include="..\Stb.Managed.Perlin\Stb.Managed.Perlin.csproj" />
+    <ProjectReference Include="..\Stb.Managed.Gpu\Stb.Managed.Gpu.csproj" Condition="'$(TargetFramework)' != 'netstandard2.1'" />
+  </ItemGroup>
+</Project>

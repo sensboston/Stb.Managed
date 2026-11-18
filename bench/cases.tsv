@@ -1,0 +1,57 @@
+# name	op	input	params
+# input paths are relative to --corpus; "-" means no input file.
+# decode_into, decode16_into and decodef_into are managed-only cases.
+# rectpack LCG: state = state * 1664525 + 1013904223 modulo 2^32.
+# Each width and height is 4 + (next state modulo 61), in that order.
+# resize float input is RGBA8 converted component-wise to float by dividing by 255.
+# SDF codepoints are the 36 consecutive values U+0041 through U+0064.
+jpeg_photo_12mp	decode	photo_12mp.jpg	comp=4
+jpeg_photo_12mp_into	decode_into	photo_12mp.jpg	comp=4
+jpeg_photo_12mp_rgb	decode	photo_12mp.jpg	comp=3
+jpeg_photo_12mp_rgb_into	decode_into	photo_12mp.jpg	comp=3
+jpeg_photo_24mp	decode	photo_24mp.jpg	comp=4
+jpeg_photo_24mp_into	decode_into	photo_24mp.jpg	comp=4
+jpeg_progressive	decode	photo_prog.jpg	comp=4
+jpeg_progressive_into	decode_into	photo_prog.jpg	comp=4
+jpeg_444	decode	photo_444.jpg	comp=4
+jpeg_444_into	decode_into	photo_444.jpg	comp=4
+jpeg_web_1080p	decode	web_1080p.jpg	comp=4
+jpeg_web_1080p_into	decode_into	web_1080p.jpg	comp=4
+jpeg_gray	decode	gray.jpg	comp=1
+jpeg_gray_into	decode_into	gray.jpg	comp=1
+png_photo_rgb	decode	photo_rgb.png	comp=3
+png_photo_rgb_into	decode_into	photo_rgb.png	comp=3
+png_screenshot_rgba	decode	screenshot.png	comp=4
+png_screenshot_rgba_into	decode_into	screenshot.png	comp=4
+png_palette	decode	palette.png	comp=4
+png_palette_into	decode_into	palette.png	comp=4
+png_16bit	decode16	photo_16.png	comp=4
+png_16bit_into	decode16_into	photo_16.png	comp=4
+bmp_24	decode	photo.bmp	comp=4
+bmp_24_into	decode_into	photo.bmp	comp=4
+tga_rle	decode	photo_rle.tga	comp=4
+tga_rle_into	decode_into	photo_rle.tga	comp=4
+gif_256	decode	anim.gif	comp=4
+gif_256_into	decode_into	anim.gif	comp=4
+psd_rgba	decode	image.psd	comp=4
+psd_rgba_into	decode_into	image.psd	comp=4
+hdr_rle	decodef	image.hdr	comp=3
+hdr_rle_into	decodef_into	image.hdr	comp=3
+png_encode_stbcompat	encode_png	photo_12mp.jpg	comp=4;engine=stb
+png_encode_default	encode_png	photo_12mp.jpg	comp=4;engine=default
+jpeg_encode_q90	encode_jpeg	photo_12mp.jpg	comp=3;quality=90
+bmp_encode	encode_bmp	photo_12mp.jpg	comp=4
+tga_encode_rle	encode_tga	photo_12mp.jpg	comp=4;rle=1
+hdr_encode	encode_hdr	image.hdr	comp=3
+resize_thumb_srgb	resize	photo_24mp.jpg	w=1920;h=1280;type=srgb;comp=4
+resize_half_linear	resize	photo_24mp.jpg	w=3000;h=2000;type=linear;comp=4
+resize_up_srgb	resize	web_1080p.jpg	w=3840;h=2160;type=srgb;comp=4
+resize_fp32	resize	photo_24mp.jpg	w=1920;h=1280;type=float;comp=4
+tt_bake_32	tt_bake	Roboto-Medium.ttf	px=32;first=32;count=95;w=512;h=512
+tt_bake_cff_32	tt_bake	SourceCodePro-Regular.otf	px=32;first=32;count=95;w=512;h=512
+tt_pack_48_2x2	tt_pack	Roboto-Medium.ttf	px=48;first=32;count=95;w=1024;h=1024;oversample=2;padding=1
+tt_sdf_48	tt_sdf	Roboto-Medium.ttf	px=48;first=65;count=36;padding=5;onedge=180;scale=36
+rectpack_2000	rectpack	-	count=2000;min=4;max=64;seed=1;w=1024;h=1024
+dxt_bc1	dxt	photo_12mp.jpg	comp=4;format=bc1;mode=normal
+dxt_bc3	dxt	photo_12mp.jpg	comp=4;format=bc3;mode=normal
+perlin_fbm_1024	perlin_fbm	-	w=1024;h=1024;startx=0;starty=0;z=0;step=0.01;lacunarity=2;gain=0.5;octaves=6

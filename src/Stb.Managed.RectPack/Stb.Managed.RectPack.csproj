@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Fully managed rectangle packer for texture atlases, a port of stb_rect_pack.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+  </ItemGroup>
+</Project>

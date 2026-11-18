@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Fully managed image resampler, a port of stb_image_resize2.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Stb.Managed.Tests" />
+    <InternalsVisibleTo Include="Stb.Managed.Gpu" />
+  </ItemGroup>
+</Project>

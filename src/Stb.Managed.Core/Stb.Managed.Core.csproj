@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Shared infrastructure for Stb.Managed: limits, errors, pixel buffers, bit readers, SIMD helpers.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Stb.Managed.Image" />
+    <InternalsVisibleTo Include="Stb.Managed.ImageWrite" />
+    <InternalsVisibleTo Include="Stb.Managed.ImageResize" />
+    <InternalsVisibleTo Include="Stb.Managed.TrueType" />
+    <InternalsVisibleTo Include="Stb.Managed.RectPack" />
+    <InternalsVisibleTo Include="Stb.Managed.Dxt" />
+    <InternalsVisibleTo Include="Stb.Managed.Perlin" />
+    <InternalsVisibleTo Include="Stb.Managed.Gpu" />
+    <InternalsVisibleTo Include="Stb.Managed.Tests" />
+  </ItemGroup>
+</Project>

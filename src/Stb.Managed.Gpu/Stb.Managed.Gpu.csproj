@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Optional ILGPU hardware-accelerated backend (CUDA, OpenCL, CPU) for Stb.Managed — DXT/BC compression, Perlin noise fields, separable image resizing &amp; mipmap chains, TrueType SDF font atlases, and batch color conversion with automatic CPU fallback.</Description>
+    <RootNamespace>Stb.Managed.Gpu</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ILGPU" />
+    <PackageReference Include="ILGPU.Algorithms" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stb.Managed.Core\Stb.Managed.Core.csproj" />
+    <ProjectReference Include="..\Stb.Managed.Dxt\Stb.Managed.Dxt.csproj" />
+    <ProjectReference Include="..\Stb.Managed.ImageResize\Stb.Managed.ImageResize.csproj" />
+    <ProjectReference Include="..\Stb.Managed.Perlin\Stb.Managed.Perlin.csproj" />
+    <ProjectReference Include="..\Stb.Managed.RectPack\Stb.Managed.RectPack.csproj" />
+    <ProjectReference Include="..\Stb.Managed.TrueType\Stb.Managed.TrueType.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ILGPURuntime" />
+    <InternalsVisibleTo Include="Stb.Managed.Tests" />
+  </ItemGroup>
+</Project>
