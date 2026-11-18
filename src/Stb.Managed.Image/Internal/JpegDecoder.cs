@@ -1727,7 +1727,7 @@ internal static class JpegDecoder
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool DecodeBlockBaseline(
         ref JpegReader reader,
         scoped Span<short> data,
