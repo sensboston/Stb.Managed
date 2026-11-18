@@ -3,6 +3,8 @@
   <PropertyGroup>
     <Description>All Stb.Managed libraries: fully managed, optimized ports of the stb single-file libraries.</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <!-- No code, so no symbols: nuget.org rejects an empty symbol package. -->
+    <IncludeSymbols>false</IncludeSymbols>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>
   <ItemGroup>
