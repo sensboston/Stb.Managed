@@ -932,6 +932,16 @@ internal static class ResizeKernels
             ReadOnlySpan<Vector256<float>> a = inV.Slice(c0.N0 - sliceInN0, count);
             ReadOnlySpan<float> wa = coeffs.Slice(x * coeffWidth, count);
 
+            if (count == 4)
+            {
+                // The common upsampling case: chains (0 + 2) and (1 + 3), summed as stb does.
+                Vector256<float> e = (a[0] * Vector256.Create(wa[0])) + (a[2] * Vector256.Create(wa[2]));
+                Vector256<float> o = (a[1] * Vector256.Create(wa[1])) + (a[3] * Vector256.Create(wa[3]));
+                outV[lx] = e + o;
+                lx++;
+                continue;
+            }
+
             if (count >= 4 && lx + 1 < outV.Length)
             {
                 ResizeContributor c1 = contribs[x + 1];
