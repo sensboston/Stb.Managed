@@ -357,6 +357,31 @@ internal static class ResizeCoders
     private static Vector128<float> Unweight(Vector256<float> v, float alpha, float inv) =>
         alpha < AlphaTooSmallToDivide ? v.GetLower() : (v.GetUpper() * inv).WithElement(3, alpha);
 
+    // sRGB encode of 8 linear values with stb's table method; the table index of each lane is looked up one by one.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<uint> SrgbEncode8Avx2(
+        Vector256<float> v,
+        ReadOnlySpan<uint> tab,
+        Span<uint> lanes,
+        Span<uint> looked,
+        Vector256<float> vMin,
+        Vector256<float> vMax,
+        Vector256<uint> vMinBits,
+        Vector256<uint> vMask16,
+        Vector256<uint> vMask8)
+    {
+        Vector256<uint> bits = Avx.Min(Avx.Max(v, vMin), vMax).AsUInt32();
+        Vector256<uint> idx = Avx2.ShiftRightLogical(Avx2.Subtract(bits, vMinBits), 20) & Vector256.Create(127u);
+        Vector128<uint> lo = idx.GetLower(), hi = idx.GetUpper();
+        Vector256<uint> t = Vector256.Create(
+            tab[(int)lo.ToScalar()], tab[(int)lo.GetElement(1)], tab[(int)lo.GetElement(2)], tab[(int)lo.GetElement(3)],
+            tab[(int)hi.ToScalar()], tab[(int)hi.GetElement(1)], tab[(int)hi.GetElement(2)], tab[(int)hi.GetElement(3)]);
+        Vector256<uint> bias = Avx2.ShiftLeftLogical(Avx2.ShiftRightLogical(t, 16), 9);
+        Vector256<uint> scale = Avx2.And(t, vMask16);
+        Vector256<uint> frac = Avx2.And(Avx2.ShiftRightLogical(bits, 12), vMask8);
+        return Avx2.ShiftRightLogical(Avx2.Add(bias, Avx2.MultiplyLow(scale, frac)), 16);
+    }
+
     // Fused fancy unweight + RGBA8 encode (sRGB or linear) for the eight-float layout on AVX2.
     private static bool TryFancyUnweightAndEncodeRgba8(Span<byte> dst, ReadOnlySpan<float> src, int pixelCount, bool srgb)
     {
@@ -376,39 +401,51 @@ internal static class ResizeCoders
         Vector256<float> vZero = Vector256<float>.Zero;
         Vector256<float> v255 = Vector256.Create(MaxUInt8AsFloat);
         Vector256<float> vHalf = Vector256.Create(0.5f);
+        Vector256<float> vSmall = Vector256.Create(AlphaTooSmallToDivide);
+        Span<uint> lanes = stackalloc uint[8];
+        Span<uint> looked = stackalloc uint[8];
         int p = 0;
         for (; p + 8 <= pixelCount; p += 8)
         {
+            // The 8 pixels x [R G B A R*A G*A B*A A*A] form an 8x8 matrix; transposing it gives one vector per channel.
             ReadOnlySpan<Vector256<float>> b = px.Slice(p, 8);
-            Vector256<float> a8 = Vector256.Create(
-                b[0].GetElement(3), b[1].GetElement(3), b[2].GetElement(3), b[3].GetElement(3),
-                b[4].GetElement(3), b[5].GetElement(3), b[6].GetElement(3), b[7].GetElement(3));
-            Vector256<float> inv8 = Vector256<float>.One / a8;
-            Vector256<float> p01 = Vector256.Create(Unweight(b[0], a8.GetElement(0), inv8.GetElement(0)), Unweight(b[1], a8.GetElement(1), inv8.GetElement(1)));
-            Vector256<float> p23 = Vector256.Create(Unweight(b[2], a8.GetElement(2), inv8.GetElement(2)), Unweight(b[3], a8.GetElement(3), inv8.GetElement(3)));
-            Vector256<float> p45 = Vector256.Create(Unweight(b[4], a8.GetElement(4), inv8.GetElement(4)), Unweight(b[5], a8.GetElement(5), inv8.GetElement(5)));
-            Vector256<float> p67 = Vector256.Create(Unweight(b[6], a8.GetElement(6), inv8.GetElement(6)), Unweight(b[7], a8.GetElement(7), inv8.GetElement(7)));
-            Vector256<int> q0, q1, q2, q3;
+            Vector256<float> t0 = Avx.UnpackLow(b[0], b[1]), t1 = Avx.UnpackHigh(b[0], b[1]);
+            Vector256<float> t2 = Avx.UnpackLow(b[2], b[3]), t3 = Avx.UnpackHigh(b[2], b[3]);
+            Vector256<float> t4 = Avx.UnpackLow(b[4], b[5]), t5 = Avx.UnpackHigh(b[4], b[5]);
+            Vector256<float> t6 = Avx.UnpackLow(b[6], b[7]), t7 = Avx.UnpackHigh(b[6], b[7]);
+            Vector256<float> s0 = Avx.Shuffle(t0, t2, 0x44), s1 = Avx.Shuffle(t0, t2, 0xEE);
+            Vector256<float> s2 = Avx.Shuffle(t1, t3, 0x44), s3 = Avx.Shuffle(t1, t3, 0xEE);
+            Vector256<float> s4 = Avx.Shuffle(t4, t6, 0x44), s5 = Avx.Shuffle(t4, t6, 0xEE);
+            Vector256<float> s6 = Avx.Shuffle(t5, t7, 0x44), s7 = Avx.Shuffle(t5, t7, 0xEE);
+            Vector256<float> r = Avx.Permute2x128(s0, s4, 0x20), ra = Avx.Permute2x128(s0, s4, 0x31);
+            Vector256<float> g = Avx.Permute2x128(s1, s5, 0x20), ga = Avx.Permute2x128(s1, s5, 0x31);
+            Vector256<float> bl = Avx.Permute2x128(s2, s6, 0x20), ba = Avx.Permute2x128(s2, s6, 0x31);
+            Vector256<float> a = Avx.Permute2x128(s3, s7, 0x20);
+
+            // Same as the scalar path: alpha below the threshold keeps the unweighted colour, otherwise colour*alpha * (1 / alpha).
+            Vector256<float> inv = Vector256<float>.One / a;
+            Vector256<float> keep = Vector256.LessThan(a, vSmall);
+            r = Vector256.ConditionalSelect(keep, r, ra * inv);
+            g = Vector256.ConditionalSelect(keep, g, ga * inv);
+            bl = Vector256.ConditionalSelect(keep, bl, ba * inv);
+
+            Vector256<uint> qa = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(a, v255), vHalf), vZero), v255)).AsUInt32();
+            Vector256<uint> qr, qg, qb;
             if (srgb)
             {
-                q0 = ConvertRgbaPairToSrgbInt32Avx2(p01, tab, vMin, vMax, vMinBits, vMask16, vMask8, vZero, v255, vHalf);
-                q1 = ConvertRgbaPairToSrgbInt32Avx2(p23, tab, vMin, vMax, vMinBits, vMask16, vMask8, vZero, v255, vHalf);
-                q2 = ConvertRgbaPairToSrgbInt32Avx2(p45, tab, vMin, vMax, vMinBits, vMask16, vMask8, vZero, v255, vHalf);
-                q3 = ConvertRgbaPairToSrgbInt32Avx2(p67, tab, vMin, vMax, vMinBits, vMask16, vMask8, vZero, v255, vHalf);
+                qr = SrgbEncode8Avx2(r, tab, lanes, looked, vMin, vMax, vMinBits, vMask16, vMask8);
+                qg = SrgbEncode8Avx2(g, tab, lanes, looked, vMin, vMax, vMinBits, vMask16, vMask8);
+                qb = SrgbEncode8Avx2(bl, tab, lanes, looked, vMin, vMax, vMinBits, vMask16, vMask8);
             }
             else
             {
-                q0 = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(p01, v255), vHalf), vZero), v255));
-                q1 = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(p23, v255), vHalf), vZero), v255));
-                q2 = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(p45, v255), vHalf), vZero), v255));
-                q3 = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(p67, v255), vHalf), vZero), v255));
+                qr = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(r, v255), vHalf), vZero), v255)).AsUInt32();
+                qg = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(g, v255), vHalf), vZero), v255)).AsUInt32();
+                qb = Avx.ConvertToVector256Int32WithTruncation(Avx.Min(Avx.Max(Avx.Add(Avx.Multiply(bl, v255), vHalf), vZero), v255)).AsUInt32();
             }
 
-            Span<byte> o = d.Slice(p * 4, 32);
-            Vector256<short> a16 = Avx2.Permute4x64(Avx2.PackSignedSaturate(q0, q1).AsInt64(), 0xD8).AsInt16();
-            Avx2.Permute4x64(Avx2.PackUnsignedSaturate(a16, a16).AsInt64(), 0xD8).AsByte().GetLower().CopyTo(o.Slice(0, 16));
-            Vector256<short> b16 = Avx2.Permute4x64(Avx2.PackSignedSaturate(q2, q3).AsInt64(), 0xD8).AsInt16();
-            Avx2.Permute4x64(Avx2.PackUnsignedSaturate(b16, b16).AsInt64(), 0xD8).AsByte().GetLower().CopyTo(o.Slice(16, 16));
+            Vector256<uint> rgba = qr | (qg << 8) | (qb << 16) | (qa << 24);
+            rgba.AsByte().CopyTo(d.Slice(p * 4, 32));
         }
 
         for (; p < pixelCount; p++)
