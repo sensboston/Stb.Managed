@@ -128,8 +128,8 @@ public sealed class StbGpuResizePlan : IDisposable
             throw new StbException(StbErrorCode.InvalidArgument, "Invalid resize geometry.");
         }
 
-        ResizeSampler hSampler = ResizeSampler.Build(in hScale, filter, customKernel: null, edge, alwaysGather: true, limits);
-        ResizeSampler vSampler = ResizeSampler.Build(in vScale, filter, customKernel: null, edge, alwaysGather: true, limits);
+        ResizeSampler hSampler = ResizeSampler.Build(in hScale, filter, customKernel: null, edge, alwaysGather: true, isHorizontal: true, limits);
+        ResizeSampler vSampler = ResizeSampler.Build(in vScale, filter, customKernel: null, edge, alwaysGather: true, isHorizontal: false, limits);
 
         // Match stb_image_resize2's alpha weighting policy (PointSample disables alpha weighting).
         int effectiveAlphaCh = alphaChannel;

@@ -339,6 +339,7 @@ internal sealed class ResizePlan
             options.HorizontalCustomFilter,
             options.HorizontalEdge,
             alwaysGather: true,
+            isHorizontal: true,
             limits);
 
         ResizeSampler vertical = ResizeSampler.Build(
@@ -347,6 +348,7 @@ internal sealed class ResizePlan
             options.VerticalCustomFilter,
             options.VerticalEdge,
             alwaysGather: false,
+            isHorizontal: false,
             limits);
 
         AlphaWeightingKind alphaWeighting = ResizeGeometry.GetAlphaWeighting(
@@ -495,6 +497,7 @@ internal sealed class ResizePlan
         }
 
         ResizeContributor[] contribs = horizontal.Contributors;
+        int widest = horizontal.ExtentsWidest;
         List<ColumnSlice> slices = new((outSubW / targetCols) + 2);
         int maxIn = 1;
         int maxOut = 1;
@@ -521,9 +524,12 @@ internal sealed class ResizePlan
                         minN0 = c.N0;
                     }
 
-                    if (c.N1 > maxN1)
+                    // The fixed-width horizontal kernels read past a short contributor's n1, so the
+                    // slice has to decode up to the furthest read (stbir__build_column_slices).
+                    int lastRead = c.N0 + ResizeSampler.HorizontalReadExtent(c.N1 - c.N0 + 1, widest) - 1;
+                    if (lastRead > maxN1)
                     {
-                        maxN1 = c.N1;
+                        maxN1 = lastRead;
                     }
                 }
             }

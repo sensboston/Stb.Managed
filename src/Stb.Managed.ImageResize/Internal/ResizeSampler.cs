@@ -32,6 +32,10 @@ internal sealed class ResizeSampler
     // 1 = gather upsample, 2 = gather downsample, 0 = scatter downsample
     internal int GatherMode { get; }
 
+    // Horizontal samplers get the fixed-width kernel read clip (stbir__clip_contributor_reads);
+    // vertical summation is sequential per scanline and never needs it.
+    internal bool IsHorizontal { get; }
+
     internal bool IsGather => GatherMode != 0;
 
     internal int CoefficientWidth { get; }
@@ -73,7 +77,8 @@ internal sealed class ResizeSampler
         ResizeContributor[] contributors,
         float[] coefficients,
         bool isPeriod1,
-        int ringEntriesCount)
+        int ringEntriesCount,
+        bool isHorizontal)
     {
         ScaleInfo = scaleInfo;
         ResolvedFilter = resolvedFilter;
@@ -88,6 +93,7 @@ internal sealed class ResizeSampler
         Coefficients = coefficients;
         IsPeriod1 = isPeriod1;
         RingEntriesCount = ringEntriesCount;
+        IsHorizontal = isHorizontal;
     }
 
     internal static ResizeSampler Build(
@@ -96,6 +102,7 @@ internal sealed class ResizeSampler
         ResizeFilterKernel? customKernel,
         ResizeEdge edge,
         bool alwaysGather,
+        bool isHorizontal,
         StbLimits limits)
     {
         ResizeFilter resolvedFilter = customKernel is null
@@ -176,7 +183,8 @@ internal sealed class ResizeSampler
             contributors,
             coefficients,
             isPeriod1,
-            ringEntriesCount);
+            ringEntriesCount,
+            isHorizontal);
 
         sampler.BuildCoefficients(inPixelsRadius);
         return sampler;
@@ -213,12 +221,21 @@ internal sealed class ResizeSampler
             double outPixelsRadius = filterSupport * scaleInfo.Scale;
             CalculateGatherUpsample(outPixelsRadius, filterSupport);
             CleanupGatheredCoefficients();
+            if (IsHorizontal)
+            {
+                ClipHorizontalReads(inPixelsRadius);
+            }
         }
         else if (GatherMode == 2)
         {
             double filterSupport = inPixelsRadius / scaleInfo.InvScale;
             CalculateGatherDownsample(-FilterPixelMargin, scaleInfo.InputFullSize + FilterPixelMargin, inPixelsRadius, filterSupport);
             CleanupGatheredCoefficients();
+            if (IsHorizontal)
+            {
+                ClipHorizontalReads(inPixelsRadius);
+            }
+
             DetectPeriod1Run();
         }
         else
@@ -226,6 +243,192 @@ internal sealed class ResizeSampler
             double filterSupport = inPixelsRadius / scaleInfo.InvScale;
             CalculateScatterFilters(inPixelsRadius, filterSupport);
         }
+    }
+
+    // How many coefficients (and input pixels) a horizontal kernel reads for one contributor: the fixed-width
+    // kernels (up to 17 taps) read exactly `widest` whatever a contributor's own width is; past 17 taps the
+    // generic loops read the contributor's own width rounded up to a four (stbir__horizontal_read_extent).
+    internal static int HorizontalReadExtent(int count, int widest)
+    {
+        if (widest <= 17)
+        {
+            return widest;
+        }
+
+        int mod = widest & 3;
+        int extent = (((count - mod + 3) & ~3) + mod);
+        if (extent < 8 + mod)
+        {
+            extent = 8 + mod;
+        }
+
+        return extent;
+    }
+
+    // stb_image_resize2 packs the horizontal coefficients and then clips the fixed-width kernel reads against
+    // the conservative filter extents (stbir__pack_coefficients + stbir__clip_contributor_reads): the kernels
+    // read exactly the read extent starting at each contributor's n0, so contributors whose read would run past
+    // the decoded scanline get their start backed up with leading zero coefficients. The four-lane horizontal
+    // reduction assigns each read slot to a chain by slot index mod 4, so this clip has to shift the coefficients
+    // exactly like stb does or those outputs round differently.
+    private void ClipHorizontalReads(double inPixelsRadius)
+    {
+        int widest = ExtentsWidest;
+        if (widest < 1 || NumContributors < 1)
+        {
+            return;
+        }
+
+        ResizeScaleInfo scaleInfo = ScaleInfo;
+        int conservativeHighest;
+        if (GatherMode == 1)
+        {
+            double filterSupport = inPixelsRadius;
+            double outPixelsRadius = filterSupport * scaleInfo.Scale;
+            OutputInPixelRange(
+                in scaleInfo,
+                scaleInfo.OutputSubSize - 1,
+                outPixelsRadius,
+                filterSupport,
+                Edge,
+                out _,
+                out conservativeHighest);
+        }
+        else
+        {
+            CalculateInPixelRange(in scaleInfo, scaleInfo.OutputSubSize, 0.0, out _, out int rawLast);
+            double filterSupport = inPixelsRadius / scaleInfo.InvScale;
+            conservativeHighest = LastContributingInput(
+                rawLast - 1,
+                scaleInfo.InputFullSize + FilterPixelMargin - 1,
+                rawLast,
+                inPixelsRadius,
+                filterSupport);
+        }
+
+        if (scaleInfo.ScaleIsRational && scaleInfo.ScaleNumerator < (uint)scaleInfo.OutputSubSize)
+        {
+            conservativeHighest += 1 + scaleInfo.ApproximatedDrift;
+        }
+
+        if (Edge != ResizeEdge.Wrap && conservativeHighest >= scaleInfo.InputFullSize)
+        {
+            conservativeHighest = scaleInfo.InputFullSize - 1;
+        }
+
+        int rowEnd = conservativeHighest + 1;
+
+        // Start on the right edge and check until we're well past the possible clip area (2 * widest).
+        for (int n = NumContributors - 1; n >= 0; n--)
+        {
+            ResizeContributor contrib = Contributors[n];
+            if (contrib.N0 + (2 * widest) < rowEnd)
+            {
+                break;
+            }
+
+            int count = contrib.N1 - contrib.N0 + 1;
+            int stopRange = HorizontalReadExtent(count, widest);
+            if (contrib.N0 + stopRange > rowEnd)
+            {
+                int newN0 = rowEnd - stopRange;
+                int backup = contrib.N0 - newN0;
+                int groupOffset = n * CoefficientWidth;
+                for (int i = count - 1; i >= 0; i--)
+                {
+                    Coefficients[groupOffset + i + backup] = Coefficients[groupOffset + i];
+                }
+
+                for (int i = backup - 1; i >= 0; i--)
+                {
+                    Coefficients[groupOffset + i] = 0.0f;
+                }
+
+                Contributors[n].N0 = newN0;
+            }
+        }
+
+        // The slice decode spans have to cover the clipped reads (they can start before the lowest
+        // contributor and, for short contributors, run past its n1 up to the read extent).
+        int lowest = int.MaxValue;
+        int highest = int.MinValue;
+        for (int n = 0; n < NumContributors; n++)
+        {
+            ResizeContributor contrib = Contributors[n];
+            if (contrib.N1 < contrib.N0)
+            {
+                continue;
+            }
+
+            if (contrib.N0 < lowest)
+            {
+                lowest = contrib.N0;
+            }
+
+            int count = contrib.N1 - contrib.N0 + 1;
+            int lastRead = contrib.N0 + HorizontalReadExtent(count, widest) - 1;
+            if (lastRead > highest)
+            {
+                highest = lastRead;
+            }
+        }
+
+        if (lowest > highest)
+        {
+            lowest = 0;
+            highest = 0;
+        }
+
+        ExtentsLowest = lowest;
+        ExtentsHighest = highest;
+    }
+
+    // stbir__calculate_in_pixel_range: an output position (by center, no per-pixel half offset) against the
+    // input pixel range. The conservative extents use the double form even for exact positions.
+    private void CalculateInPixelRange(
+        in ResizeScaleInfo scaleInfo,
+        double outPixelCenter,
+        double outFilterRadius,
+        out int firstPixel,
+        out int lastPixel)
+    {
+        double lower = (outPixelCenter - outFilterRadius + scaleInfo.PixelShift) * scaleInfo.InvScale;
+        double upper = (outPixelCenter + outFilterRadius + scaleInfo.PixelShift) * scaleInfo.InvScale;
+        ClipInPixelRange(
+            ResizeGeometry.FloorToInt(lower + 0.5 + TieEpsilon),
+            ResizeGeometry.FloorToInt(upper - 0.5 + TieEpsilon),
+            scaleInfo.InputFullSize,
+            Edge,
+            out firstPixel,
+            out lastPixel);
+    }
+
+    // stbir__last_contributing_input: walk inward from a bound until input pixels stop contributing anywhere.
+    private int LastContributingInput(int start, int end, int fallback, double inPixelsRadius, double support)
+    {
+        int n = start;
+        int last = fallback;
+        bool seen = false;
+        while (n <= end)
+        {
+            InputOutPixelRange(in ScaleInfo, n, inPixelsRadius, support, out int outFirstPixel, out int outLastPixel);
+            if (outFirstPixel > outLastPixel)
+            {
+                if (seen)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                last = n;
+                seen = true;
+            }
+
+            n++;
+        }
+
+        return last;
     }
 
     // Detects the maximal contiguous run [Period1Start, Period1End) of output columns that share identical

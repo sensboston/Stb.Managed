@@ -702,7 +702,7 @@ internal static class ResizeKernels
             case ResizeCoders.FancyStride:
                 if (Vector128.IsHardwareAccelerated)
                 {
-                    HorizontalGatherFancy8(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0);
+                    HorizontalGatherFancy8(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0, horizontal.ExtentsWidest);
                     return;
                 }
 
@@ -713,28 +713,16 @@ internal static class ResizeKernels
             case 2:
                 if (Vector128.IsHardwareAccelerated)
                 {
-                    HorizontalGatherSmallV128(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0, eff);
+                    HorizontalGatherSmallV128(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0, eff, horizontal.ExtentsWidest);
                     return;
                 }
 
                 break;
 
             case 1:
-                if (Avx.IsSupported)
+                if (Vector128.IsHardwareAccelerated)
                 {
-                    HorizontalGather1ChAvx(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0);
-                    return;
-                }
-
-                if (Sse.IsSupported)
-                {
-                    HorizontalGather1ChSse(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0);
-                    return;
-                }
-
-                if (AdvSimd.IsSupported)
-                {
-                    HorizontalGather1ChArm64(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0);
+                    HorizontalGather1ChVector(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0, horizontal.ExtentsWidest);
                     return;
                 }
 
@@ -760,6 +748,7 @@ internal static class ResizeKernels
         if (eff != 1)
         {
             int fourChains = eff is 2 or 3 ? 1 : 0;
+            int widest = horizontal.ExtentsWidest;
             for (int lx = 0; lx < sliceOutW; lx++)
             {
                 int x = sliceOutX + lx;
@@ -772,7 +761,11 @@ internal static class ResizeKernels
                 }
 
                 int src = (c.N0 - sliceInN0) * eff;
-                ReadOnlySpan<float> w = coeffs.AsSpan(x * coeffWidth, c.N1 - c.N0 + 1);
+                int count = c.N1 - c.N0 + 1;
+                // The fixed-width horizontal kernels read the contributor's whole read extent
+                // (zero-filled coefficient slots past its own width), so sum that many slots.
+                int readLen = ResizeSampler.HorizontalReadExtent(count, widest);
+                ReadOnlySpan<float> w = coeffs.AsSpan(x * coeffWidth, readLen);
                 for (int ch = 0; ch < eff; ch++)
                 {
                     output[dst + ch] = GatherOneChannel(input, src, eff, ch, w, fourChains);
@@ -785,6 +778,7 @@ internal static class ResizeKernels
         switch (eff)
         {
             case 1:
+                int widest = horizontal.ExtentsWidest;
                 for (int lx = 0; lx < sliceOutW; lx++)
                 {
                     int x = sliceOutX + lx;
@@ -798,13 +792,11 @@ internal static class ResizeKernels
                     int src = c.N0 - sliceInN0;
                     int count = c.N1 - c.N0 + 1;
                     int co = x * coeffWidth;
-                    float t0 = 0.0f;
-                    for (int i = 0; i < count; i++)
-                    {
-                        t0 += coeffs[co + i] * input[src + i];
-                    }
-
-                    output[lx] = t0;
+                    // The fixed-width horizontal kernels read the contributor's whole read extent
+                    // (zero-filled coefficient slots past its own width), so sum that many slots.
+                    int readLen = ResizeSampler.HorizontalReadExtent(count, widest);
+                    ReadOnlySpan<float> w = coeffs.AsSpan(co, readLen);
+                    output[lx] = GatherOneChannel(input, src, 1, 0, w, fourChains: 1);
                 }
 
                 break;
@@ -812,14 +804,17 @@ internal static class ResizeKernels
         }
     }
 
-    // stb_image_resize2 summation order for the horizontal gather of a pixel with n taps (SSE2 build):
-    // fewer than 4 taps form one chain; otherwise 4- and 8-float pixels keep two chains (even and odd taps,
-    // result E + O), 2- and 3-float pixels keep four chains (taps by index mod 4, result (A0 + A2) + (A1 + A3)).
+    // stb_image_resize2 summation order for the horizontal gather of one channel of a pixel (SSE2 build). The
+    // fixed-width kernels chain whenever the read is four or more slots: 4- and 8-float pixels keep two chains
+    // (even and odd taps, result E + O), 1-, 2- and 3-float pixels keep four chains (slots by index mod 4,
+    // result (A0 + A2) + (A1 + A3)). Below that, one- and 4+-float pixels sum sequentially, and 2-/3-float
+    // pixels chain from three slots on (their zero-padded fourth slot supplies the fourth lane).
     private static float GatherOneChannel(ReadOnlySpan<float> input, int src, int stride, int ch, ReadOnlySpan<float> w, int fourChains)
     {
         int count = w.Length;
         float a0 = w[0] * input[src + ch];
-        if (count < 4)
+        int chainBelow = fourChains != 0 && stride > 1 ? 3 : 4;
+        if (count < chainBelow)
         {
             for (int i = 1; i < count; i++)
             {
@@ -850,7 +845,7 @@ internal static class ResizeKernels
 
         float a1 = w[1] * input[src + stride + ch];
         float a2 = w[2] * input[src + (2 * stride) + ch];
-        float a3 = w[3] * input[src + (3 * stride) + ch];
+        float a3 = count > 3 ? w[3] * input[src + (3 * stride) + ch] : 0.0f;
         for (int i = 4; i < count; i++)
         {
             float term = w[i] * input[src + (i * stride) + ch];
@@ -877,15 +872,16 @@ internal static class ResizeKernels
         ReadOnlySpan<float> input,
         int sliceOutX,
         int sliceOutW,
-        int sliceInN0)
+        int sliceInN0,
+        int widest)
     {
         if (Vector256.IsHardwareAccelerated)
         {
-            HorizontalGatherFancy8V256(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0);
+            HorizontalGatherFancy8V256(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0, widest);
         }
         else
         {
-            HorizontalGatherFancy8V128(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0);
+            HorizontalGatherFancy8V128(horizontal, output, input, sliceOutX, sliceOutW, sliceInN0, widest);
         }
     }
 
@@ -908,7 +904,8 @@ internal static class ResizeKernels
         ReadOnlySpan<float> input,
         int sliceOutX,
         int sliceOutW,
-        int sliceInN0)
+        int sliceInN0,
+        int widest)
     {
         ReadOnlySpan<ResizeContributor> contribs = horizontal.Contributors;
         ReadOnlySpan<float> coeffs = horizontal.Coefficients;
@@ -929,10 +926,14 @@ internal static class ResizeKernels
                 continue;
             }
 
-            ReadOnlySpan<Vector256<float>> a = inV.Slice(c0.N0 - sliceInN0, count);
-            ReadOnlySpan<float> wa = coeffs.Slice(x * coeffWidth, count);
+            // The fixed-width horizontal kernels read the contributor's whole read extent (zero-filled
+            // coefficient slots past its own width); the fallback below sums that many slots so short
+            // contributors chain like stb_image_resize2 whenever the read is four or more slots.
+            int readLen = ResizeSampler.HorizontalReadExtent(count, widest);
+            ReadOnlySpan<Vector256<float>> a = inV.Slice(c0.N0 - sliceInN0, readLen);
+            ReadOnlySpan<float> wa = coeffs.Slice(x * coeffWidth, readLen);
 
-            if (count == 4)
+            if (readLen == 4)
             {
                 // The common upsampling case: chains (0 + 2) and (1 + 3), summed as stb does.
                 Vector256<float> e = (a[0] * Vector256.Create(wa[0])) + (a[2] * Vector256.Create(wa[2]));
@@ -942,14 +943,14 @@ internal static class ResizeKernels
                 continue;
             }
 
-            if (count >= 4 && lx + 1 < outV.Length)
+            if (readLen >= 4 && lx + 1 < outV.Length)
             {
                 ResizeContributor c1 = contribs[x + 1];
-                if (c1.N1 - c1.N0 + 1 == count)
+                if (ResizeSampler.HorizontalReadExtent(c1.N1 - c1.N0 + 1, widest) == readLen)
                 {
                     // Two output pixels in lockstep: four independent chains.
-                    ReadOnlySpan<Vector256<float>> b = inV.Slice(c1.N0 - sliceInN0, count);
-                    ReadOnlySpan<float> wb = coeffs.Slice((x + 1) * coeffWidth, count);
+                    ReadOnlySpan<Vector256<float>> b = inV.Slice(c1.N0 - sliceInN0, readLen);
+                    ReadOnlySpan<float> wb = coeffs.Slice((x + 1) * coeffWidth, readLen);
                     Vector256<float> ae = a[0] * Vector256.Create(wa[0]);
                     Vector256<float> ao = a[1] * Vector256.Create(wa[1]);
                     Vector256<float> be = b[0] * Vector256.Create(wb[0]);
@@ -957,7 +958,7 @@ internal static class ResizeKernels
 
                     // Taps 2.. as (even, odd) pairs; every view is sliced to the same length, so the loop
                     // carries no bounds checks.
-                    int pairTaps = (count - 2) & ~1;
+                    int pairTaps = (readLen - 2) & ~1;
                     ReadOnlySpan<VPair> pa = MemoryMarshal.Cast<Vector256<float>, VPair>(a.Slice(2, pairTaps));
                     ReadOnlySpan<VPair> pb = MemoryMarshal.Cast<Vector256<float>, VPair>(b.Slice(2, pairTaps)).Slice(0, pa.Length);
                     ReadOnlySpan<FPair> pwa = MemoryMarshal.Cast<float, FPair>(wa.Slice(2, pairTaps)).Slice(0, pa.Length);
@@ -970,10 +971,10 @@ internal static class ResizeKernels
                         bo += pb[k].O * Vector256.Create(pwb[k].O);
                     }
 
-                    if ((count & 1) != 0)
+                    if ((readLen & 1) != 0)
                     {
-                        ae += a[count - 1] * Vector256.Create(wa[count - 1]);
-                        be += b[count - 1] * Vector256.Create(wb[count - 1]);
+                        ae += a[readLen - 1] * Vector256.Create(wa[readLen - 1]);
+                        be += b[readLen - 1] * Vector256.Create(wb[readLen - 1]);
                     }
 
                     outV[lx] = ae + ao;
@@ -1025,7 +1026,8 @@ internal static class ResizeKernels
         ReadOnlySpan<float> input,
         int sliceOutX,
         int sliceOutW,
-        int sliceInN0)
+        int sliceInN0,
+        int widest)
     {
         ReadOnlySpan<ResizeContributor> contribs = horizontal.Contributors;
         ReadOnlySpan<float> coeffs = horizontal.Coefficients;
@@ -1045,15 +1047,18 @@ internal static class ResizeKernels
                 continue;
             }
 
-            // Pixel n occupies vectors 2n (R G B A) and 2n+1 (R*A G*A B*A pad).
-            ReadOnlySpan<Vector128<float>> a = inV.Slice((c.N0 - sliceInN0) * 2, count * 2);
-            ReadOnlySpan<float> w = coeffs.Slice(x * coeffWidth, count);
+            // Pixel n occupies vectors 2n (R G B A) and 2n+1 (R*A G*A B*A pad). The fixed-width horizontal
+            // kernels read the contributor's whole read extent (zero-filled coefficient slots past its own
+            // width), so the chains below run over that many slots, exactly like stb_image_resize2.
+            int readLen = ResizeSampler.HorizontalReadExtent(count, widest);
+            ReadOnlySpan<Vector128<float>> a = inV.Slice((c.N0 - sliceInN0) * 2, readLen * 2);
+            ReadOnlySpan<float> w = coeffs.Slice(x * coeffWidth, readLen);
             Vector128<float> w0 = Vector128.Create(w[0]);
             Vector128<float> loE = a[0] * w0;
             Vector128<float> hiE = a[1] * w0;
-            if (count < 4)
+            if (readLen < 4)
             {
-                for (int i = 1; i < count; i++)
+                for (int i = 1; i < readLen; i++)
                 {
                     Vector128<float> wi = Vector128.Create(w[i]);
                     loE += a[2 * i] * wi;
@@ -1069,7 +1074,7 @@ internal static class ResizeKernels
             Vector128<float> loO = a[2] * w1;
             Vector128<float> hiO = a[3] * w1;
             int k = 2;
-            for (; k + 1 < count; k += 2)
+            for (; k + 1 < readLen; k += 2)
             {
                 Vector128<float> we = Vector128.Create(w[k]);
                 Vector128<float> wo = Vector128.Create(w[k + 1]);
@@ -1079,7 +1084,7 @@ internal static class ResizeKernels
                 hiO += a[(2 * k) + 3] * wo;
             }
 
-            if (k < count)
+            if (k < readLen)
             {
                 Vector128<float> we = Vector128.Create(w[k]);
                 loE += a[2 * k] * we;
@@ -1100,7 +1105,8 @@ internal static class ResizeKernels
         int sliceOutX,
         int sliceOutW,
         int sliceInN0,
-        int eff)
+        int eff,
+        int widest)
     {
         ReadOnlySpan<ResizeContributor> contribs = horizontal.Contributors;
         ReadOnlySpan<float> coeffs = horizontal.Coefficients;
@@ -1119,8 +1125,12 @@ internal static class ResizeKernels
             }
 
             int src = (c.N0 - sliceInN0) * eff;
-            ReadOnlySpan<float> w = coeffs.Slice(x * coeffWidth, count);
-            if (src + ((count - 1) * eff) + 4 > input.Length || dst + 4 > output.Length)
+            // The fixed-width horizontal kernels read the contributor's whole read extent (zero-filled
+            // coefficient slots past its own width), so sum that many slots: the chain structure below
+            // applies whenever the read is four or more slots, exactly like stb_image_resize2.
+            int readLen = ResizeSampler.HorizontalReadExtent(count, widest);
+            ReadOnlySpan<float> w = coeffs.Slice(x * coeffWidth, readLen);
+            if (src + ((readLen - 1) * eff) + 4 > input.Length || dst + 4 > output.Length)
             {
                 for (int ch = 0; ch < eff; ch++)
                 {
@@ -1130,19 +1140,19 @@ internal static class ResizeKernels
                 continue;
             }
 
-            ReadOnlySpan<float> win = input.Slice(src, ((count - 1) * eff) + 4);
-            if (fourChains == 0 && count >= 4 && Vector256.IsHardwareAccelerated)
+            ReadOnlySpan<float> win = input.Slice(src, ((readLen - 1) * eff) + 4);
+            if (fourChains == 0 && readLen >= 4 && Vector256.IsHardwareAccelerated)
             {
                 // taps i and i + 1 are adjacent: one 8-float load, even chain in the low half, odd in the high half
                 Vector256<float> acc = Vector256.Create(win.Slice(0, 8)) * Vector256.Create(Vector128.Create(w[0]), Vector128.Create(w[1]));
                 int k = 2;
-                for (; k + 1 < count; k += 2)
+                for (; k + 1 < readLen; k += 2)
                 {
                     acc += Vector256.Create(win.Slice(k * 4, 8)) * Vector256.Create(Vector128.Create(w[k]), Vector128.Create(w[k + 1]));
                 }
 
                 Vector128<float> even = acc.GetLower();
-                if (k < count)
+                if (k < readLen)
                 {
                     even += Vector128.Create(win.Slice(k * 4, 4)) * w[k];
                 }
@@ -1153,9 +1163,10 @@ internal static class ResizeKernels
 
             Vector128<float> a0 = Vector128.Create(win.Slice(0, 4)) * w[0];
             Vector128<float> result;
-            if (count < 4)
+            int chainBelow = fourChains != 0 ? 3 : 4;
+            if (readLen < chainBelow)
             {
-                for (int i = 1; i < count; i++)
+                for (int i = 1; i < readLen; i++)
                 {
                     a0 += Vector128.Create(win.Slice(i * eff, 4)) * w[i];
                 }
@@ -1166,13 +1177,13 @@ internal static class ResizeKernels
             {
                 Vector128<float> odd = Vector128.Create(win.Slice(eff, 4)) * w[1];
                 int i = 2;
-                for (; i + 1 < count; i += 2)
+                for (; i + 1 < readLen; i += 2)
                 {
                     a0 += Vector128.Create(win.Slice(i * eff, 4)) * w[i];
                     odd += Vector128.Create(win.Slice((i + 1) * eff, 4)) * w[i + 1];
                 }
 
-                if (i < count)
+                if (i < readLen)
                 {
                     a0 += Vector128.Create(win.Slice(i * eff, 4)) * w[i];
                 }
@@ -1183,9 +1194,9 @@ internal static class ResizeKernels
             {
                 Vector128<float> a1 = Vector128.Create(win.Slice(eff, 4)) * w[1];
                 Vector128<float> a2 = Vector128.Create(win.Slice(2 * eff, 4)) * w[2];
-                Vector128<float> a3 = Vector128.Create(win.Slice(3 * eff, 4)) * w[3];
+                Vector128<float> a3 = readLen > 3 ? Vector128.Create(win.Slice(3 * eff, 4)) * w[3] : Vector128<float>.Zero;
                 int i = 4;
-                for (; i + 3 < count; i += 4)
+                for (; i + 3 < readLen; i += 4)
                 {
                     a0 += Vector128.Create(win.Slice(i * eff, 4)) * w[i];
                     a1 += Vector128.Create(win.Slice((i + 1) * eff, 4)) * w[i + 1];
@@ -1193,17 +1204,17 @@ internal static class ResizeKernels
                     a3 += Vector128.Create(win.Slice((i + 3) * eff, 4)) * w[i + 3];
                 }
 
-                if (i < count)
+                if (i < readLen)
                 {
                     a0 += Vector128.Create(win.Slice(i * eff, 4)) * w[i];
                 }
 
-                if (i + 1 < count)
+                if (i + 1 < readLen)
                 {
                     a1 += Vector128.Create(win.Slice((i + 1) * eff, 4)) * w[i + 1];
                 }
 
-                if (i + 2 < count)
+                if (i + 2 < readLen)
                 {
                     a2 += Vector128.Create(win.Slice((i + 2) * eff, 4)) * w[i + 2];
                 }
@@ -1215,18 +1226,21 @@ internal static class ResizeKernels
         }
     }
 
-    private static void HorizontalGather1ChAvx(
+    // One channel, stb_image_resize2 SSE2/NEON order: fewer than four slots sum sequentially; four or more keep
+    // four lanes (slot i in lane i mod 4, products added in slot order, no FMA) and finish as (l0 + l2) + (l1 + l3).
+    // Every output reads its whole fixed read extent (zero-filled coefficient slots past its own width), so a
+    // three-coefficient contributor under a widest of four or more reduces on four lanes, not sequentially.
+    private static void HorizontalGather1ChVector(
         ResizeSampler horizontal,
         Span<float> output,
         ReadOnlySpan<float> input,
         int sliceOutX,
         int sliceOutW,
-        int sliceInN0)
+        int sliceInN0,
+        int widest)
     {
         ReadOnlySpan<ResizeContributor> cRef = horizontal.Contributors;
         ReadOnlySpan<float> coeffRef = horizontal.Coefficients;
-        var inRef = input;
-        var outRef = output;
         int coeffWidth = horizontal.CoefficientWidth;
 
         for (int lx = 0; lx < sliceOutW; lx++)
@@ -1235,147 +1249,57 @@ internal static class ResizeKernels
             ResizeContributor c = cRef[x];
             if (c.N1 < c.N0)
             {
-                outRef[lx] = 0.0f;
+                output[lx] = 0.0f;
                 continue;
             }
 
             int src = c.N0 - sliceInN0;
             int count = c.N1 - c.N0 + 1;
             int co = x * coeffWidth;
-            int i = 0;
-            Vector128<float> acc128 = Vector128<float>.Zero;
-
-            if (count >= 8)
-            {
-                Vector256<float> acc256 = Vector256<float>.Zero;
-                for (; i <= count - 8; i += 8)
-                {
-                    acc256 = Avx.Add(
-                        acc256,
-                        Avx.Multiply(
-                            Vector256.Create(inRef.Slice(src + i, 8)),
-                            Vector256.Create(coeffRef.Slice(co + i, 8))));
-                }
-
-                acc128 = Sse.Add(acc256.GetLower(), acc256.GetUpper());
-            }
-
-            if (i <= count - 4)
-            {
-                acc128 = Sse.Add(
-                    acc128,
-                    Sse.Multiply(
-                        Vector128.Create(inRef.Slice(src + i, 4)),
-                        Vector128.Create(coeffRef.Slice(co + i, 4))));
-                i += 4;
-            }
-
-            float sum = (acc128.GetElement(0) + acc128.GetElement(1)) + (acc128.GetElement(2) + acc128.GetElement(3));
-            for (; i < count; i++)
-            {
-                sum += coeffRef[co + i] * inRef[src + i];
-            }
-
-            outRef[lx] = sum;
+            int readLen = ResizeSampler.HorizontalReadExtent(count, widest);
+            output[lx] = Sum1ChVector(input.Slice(src, readLen), coeffRef.Slice(co, readLen));
         }
     }
 
-    private static void HorizontalGather1ChSse(
-        ResizeSampler horizontal,
-        Span<float> output,
-        ReadOnlySpan<float> input,
-        int sliceOutX,
-        int sliceOutW,
-        int sliceInN0)
+    private static float Sum1ChVector(ReadOnlySpan<float> x, ReadOnlySpan<float> w)
     {
-        ReadOnlySpan<ResizeContributor> cRef = horizontal.Contributors;
-        ReadOnlySpan<float> coeffRef = horizontal.Coefficients;
-        var inRef = input;
-        var outRef = output;
-        int coeffWidth = horizontal.CoefficientWidth;
-
-        for (int lx = 0; lx < sliceOutW; lx++)
+        int count = w.Length;
+        if (count < 4)
         {
-            int x = sliceOutX + lx;
-            ResizeContributor c = cRef[x];
-            if (c.N1 < c.N0)
+            float s = w[0] * x[0];
+            for (int i = 1; i < count; i++)
             {
-                outRef[lx] = 0.0f;
-                continue;
+                s += w[i] * x[i];
             }
 
-            int src = c.N0 - sliceInN0;
-            int count = c.N1 - c.N0 + 1;
-            int co = x * coeffWidth;
-            int i = 0;
-            Vector128<float> acc = Vector128<float>.Zero;
-
-            for (; i <= count - 4; i += 4)
-            {
-                acc = Sse.Add(
-                    acc,
-                    Sse.Multiply(
-                        Vector128.Create(inRef.Slice(src + i, 4)),
-                        Vector128.Create(coeffRef.Slice(co + i, 4))));
-            }
-
-            float sum = (acc.GetElement(0) + acc.GetElement(1)) + (acc.GetElement(2) + acc.GetElement(3));
-            for (; i < count; i++)
-            {
-                sum += coeffRef[co + i] * inRef[src + i];
-            }
-
-            outRef[lx] = sum;
+            return s;
         }
-    }
 
-    private static void HorizontalGather1ChArm64(
-        ResizeSampler horizontal,
-        Span<float> output,
-        ReadOnlySpan<float> input,
-        int sliceOutX,
-        int sliceOutW,
-        int sliceInN0)
-    {
-        ReadOnlySpan<ResizeContributor> cRef = horizontal.Contributors;
-        ReadOnlySpan<float> coeffRef = horizontal.Coefficients;
-        var inRef = input;
-        var outRef = output;
-        int coeffWidth = horizontal.CoefficientWidth;
-
-        for (int lx = 0; lx < sliceOutW; lx++)
+        int full = count >> 2;
+        Vector128<float> acc = Vector128.Create(x.Slice(0, 4)) * Vector128.Create(w.Slice(0, 4));
+        for (int g = 1; g < full; g++)
         {
-            int x = sliceOutX + lx;
-            ResizeContributor c = cRef[x];
-            if (c.N1 < c.N0)
-            {
-                outRef[lx] = 0.0f;
-                continue;
-            }
-
-            int src = c.N0 - sliceInN0;
-            int count = c.N1 - c.N0 + 1;
-            int co = x * coeffWidth;
-            int i = 0;
-            Vector128<float> acc = Vector128<float>.Zero;
-
-            for (; i <= count - 4; i += 4)
-            {
-                acc = AdvSimd.Add(
-                    acc,
-                    AdvSimd.Multiply(
-                        Vector128.Create(inRef.Slice(src + i, 4)),
-                        Vector128.Create(coeffRef.Slice(co + i, 4))));
-            }
-
-            float sum = (acc.GetElement(0) + acc.GetElement(1)) + (acc.GetElement(2) + acc.GetElement(3));
-            for (; i < count; i++)
-            {
-                sum += coeffRef[co + i] * inRef[src + i];
-            }
-
-            outRef[lx] = sum;
+            int o = g * 4;
+            acc += Vector128.Create(x.Slice(o, 4)) * Vector128.Create(w.Slice(o, 4));
         }
+
+        float a0 = acc.GetElement(0);
+        float a1 = acc.GetElement(1);
+        float a2 = acc.GetElement(2);
+        float a3 = acc.GetElement(3);
+        for (int i = full * 4; i < count; i++)
+        {
+            float term = w[i] * x[i];
+            switch (i & 3)
+            {
+                case 0: a0 += term; break;
+                case 1: a1 += term; break;
+                case 2: a2 += term; break;
+                default: a3 += term; break;
+            }
+        }
+
+        return (a0 + a2) + (a1 + a3);
     }
 #endif
 
