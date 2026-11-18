@@ -406,12 +406,13 @@ internal sealed class ResizeSampler
     // stbir__last_contributing_input: walk inward from a bound until input pixels stop contributing anywhere.
     private int LastContributingInput(int start, int end, int fallback, double inPixelsRadius, double support)
     {
+        ResizeScaleInfo scaleInfo = ScaleInfo;
         int n = start;
         int last = fallback;
         bool seen = false;
         while (n <= end)
         {
-            InputOutPixelRange(in ScaleInfo, n, inPixelsRadius, support, out int outFirstPixel, out int outLastPixel);
+            InputOutPixelRange(in scaleInfo, n, inPixelsRadius, support, out int outFirstPixel, out int outLastPixel);
             if (outFirstPixel > outLastPixel)
             {
                 if (seen)
