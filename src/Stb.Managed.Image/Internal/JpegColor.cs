@@ -1310,7 +1310,7 @@ internal static class JpegColor
 
         // Interior input columns i..i+7 produce output pixels 2i..2i+15; all of them are fully interior.
         int i = 1;
-        for (; i + 7 <= wLores - 2; i += 8)
+        for (; i + 14 <= wLores - 1 && i + 7 <= wLores - 2; i += 8)
         {
             Vector128<byte> cb16 = HvUp16(cbNear, cbFar, i, k.C8);
             Vector128<byte> cr16 = HvUp16(crNear, crFar, i, k.C8);
@@ -1330,17 +1330,17 @@ internal static class JpegColor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector128<byte> HvUp16(ReadOnlySpan<byte> near, ReadOnlySpan<byte> far, int i, Vector128<short> c8)
     {
-        Vector128<short> nPrev = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(near, i - 1)).AsInt16();
-        Vector128<short> fPrev = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(far, i - 1)).AsInt16();
-        Vector128<short> prev = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nPrev, 1), nPrev), fPrev);
-
-        Vector128<short> nCurr = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(near, i)).AsInt16();
-        Vector128<short> fCurr = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(far, i)).AsInt16();
-        Vector128<short> curr = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nCurr, 1), nCurr), fCurr);
-
-        Vector128<short> nNext = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(near, i + 1)).AsInt16();
-        Vector128<short> fNext = AdvSimd.ZeroExtendWideningLower(Load8Bytes64(far, i + 1)).AsInt16();
-        Vector128<short> next = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nNext, 1), nNext), fNext);
+        // 3 * near + far for input columns i - 1 .. i + 14, computed once; the previous, current and next
+        // columns of output pair k are lanes k, k + 1 and k + 2 of that row (vext, as stb does).
+        Vector128<byte> n = Vector128.Create(near.Slice(i - 1, 16));
+        Vector128<byte> f = Vector128.Create(far.Slice(i - 1, 16));
+        Vector128<short> nLo = AdvSimd.ZeroExtendWideningLower(n.GetLower()).AsInt16();
+        Vector128<short> nHi = AdvSimd.ZeroExtendWideningUpper(n).AsInt16();
+        Vector128<short> tLo = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nLo, 1), nLo), AdvSimd.ZeroExtendWideningLower(f.GetLower()).AsInt16());
+        Vector128<short> tHi = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(nHi, 1), nHi), AdvSimd.ZeroExtendWideningUpper(f).AsInt16());
+        Vector128<short> prev = tLo;
+        Vector128<short> curr = AdvSimd.ExtractVector128(tLo, tHi, 1);
+        Vector128<short> next = AdvSimd.ExtractVector128(tLo, tHi, 2);
 
         Vector128<short> c3p8 = AdvSimd.Add(AdvSimd.Add(AdvSimd.ShiftLeftLogical(curr, 1), curr), c8);
         Vector64<byte> e8 = AdvSimd.ExtractNarrowingSaturateUnsignedLower(AdvSimd.ShiftRightArithmetic(AdvSimd.Add(c3p8, prev), 4));
