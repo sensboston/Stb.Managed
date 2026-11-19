@@ -1,0 +1,212 @@
+name: fuzz-coverage
+
+# Coverage-guided fuzzing: libFuzzer + SharpFuzz over every Stb.Managed fuzz target.
+# Runs manually (choose the target and the per-target time budget) and weekly.
+# Other workflows are intentionally untouched by this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Fuzz target: all, image, truetype, imagewrite, imageresize, rectpack, dxt, perlin'
+        required: false
+        default: 'all'
+      seconds:
+        description: 'libFuzzer time budget per target, in seconds'
+        required: false
+        default: '180'
+  schedule:
+    - cron: '0 6 * * 1' # every Monday 06:00 UTC (per-target budget defaults to 180 seconds)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      LIBFUZZER_DOTNET_URL: https://github.com/Metalnem/libfuzzer-dotnet/releases/download/v2025.05.02.0904/libfuzzer-dotnet-ubuntu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish fuzz host
+        shell: bash
+        run: dotnet publish fuzz/Stb.Managed.Fuzz/Stb.Managed.Fuzz.csproj -c Release -o artifacts/fuzz-host
+
+      - name: Fetch and verify test corpus
+        shell: bash
+        run: dotnet run --project tools/Stb.Managed.Tools -c Release -- fetch-corpus
+
+      # Seeds per target, using the harness's own corpus filtering (images for the image
+      # decoders, fonts for truetype, everything for the parameter-driven targets) plus
+      # its built-in synthetic seeds. Done BEFORE instrumentation so the export run
+      # executes clean, unmodified assemblies.
+      - name: Export per-target seeds
+        shell: bash
+        run: |
+          case "${{ inputs.target || 'all' }}" in
+            all) targets="image truetype imagewrite imageresize rectpack dxt perlin" ;;
+            *) targets="${{ inputs.target }}" ;;
+          esac
+          for t in $targets; do
+            dotnet artifacts/fuzz-host/Stb.Managed.Fuzz.dll --export-seeds "$t" artifacts/corpus "artifacts/fuzz-seeds/$t"
+          done
+
+      - name: Install SharpFuzz command line tool
+        shell: bash
+        run: dotnet tool install --global SharpFuzz.CommandLine
+
+      - name: Download libfuzzer-dotnet driver
+        shell: bash
+        run: |
+          mkdir -p artifacts/libfuzzer
+          curl -fsSL "$LIBFUZZER_DOTNET_URL" -o artifacts/libfuzzer/libfuzzer-dotnet
+          chmod +x artifacts/libfuzzer/libfuzzer-dotnet
+          file artifacts/libfuzzer/libfuzzer-dotnet
+
+      - name: Instrument Stb.Managed assemblies
+        shell: bash
+        run: |
+          cd artifacts/fuzz-host
+          set -e
+          for dll in Stb.Managed.dll Stb.Managed.*.dll; do
+            if [ "$dll" = "Stb.Managed.Fuzz.dll" ]; then continue; fi
+            echo "Instrumenting $dll"
+            "$HOME/.dotnet/tools/sharpfuzz" "$dll"
+          done
+
+      # libFuzzer writes new coverage-increasing inputs into the corpus directory it is
+      # given, so each target gets one writable directory pre-populated with its seeds.
+      - name: Run coverage-guided fuzzing
+        shell: bash
+        run: |
+          case "${{ inputs.target || 'all' }}" in
+            all) targets="image truetype imagewrite imageresize rectpack dxt perlin" ;;
+            *) targets="${{ inputs.target }}" ;;
+          esac
+          seconds="${{ inputs.seconds || '180' }}"
+          mkdir -p artifacts/fuzz-crashes artifacts/fuzz-logs
+
+          status=0
+
+          # Driver self-check: -help=1 must print usage and exit 0. Unbuffered via stdbuf so
+          # nothing is lost if the driver _Exit()s; dumped via ::error because GitHub keeps
+          # only error annotations of a failed step readable through the check-runs API.
+          hrc=0
+          stdbuf -o0 -e0 artifacts/libfuzzer/libfuzzer-dotnet -help=1 > artifacts/fuzz-logs/_driver-help.log 2>&1 || hrc=$?
+          {
+            echo "help rc=$hrc; help log size: $(stat -c%s artifacts/fuzz-logs/_driver-help.log 2>/dev/null || echo missing);"
+            cat artifacts/fuzz-logs/_driver-help.log 2>/dev/null || true
+          } | tr '\n\r\t' '   ' | fold -s -w 600 | head -4 | while IFS= read -r chunk; do
+            echo "::error title=driver self-check::$chunk"
+          done
+
+          # Single short unbuffered probe of one target before the full loop.
+          mkdir -p artifacts/fuzz-corpus/_probe
+          cp artifacts/fuzz-seeds/image/*.bin artifacts/fuzz-corpus/_probe/ 2>/dev/null || true
+          prc=0
+          STB_FUZZ_TARGET=image stdbuf -o0 -e0 artifacts/libfuzzer/libfuzzer-dotnet \
+                --target_path=dotnet --target_arg="$PWD/artifacts/fuzz-host/Stb.Managed.Fuzz.dll" \
+                -runs=25 -timeout=10 -max_len=1048576 \
+                -artifact_prefix="$PWD/artifacts/fuzz-crashes/_probe-" \
+                "artifacts/fuzz-corpus/_probe" \
+                > artifacts/fuzz-logs/_probe.log 2>&1 || prc=$?
+          if [ "$prc" -ne 0 ]; then status=1; fi
+          {
+            echo "probe rc=$prc; probe log size: $(stat -c%s artifacts/fuzz-logs/_probe.log 2>/dev/null || echo missing);"
+            cat artifacts/fuzz-logs/_probe.log 2>/dev/null || true
+          } | tr '\n\r\t' '   ' | fold -s -w 600 | head -6 | while IFS= read -r chunk; do
+            echo "::error title=fuzz probe::$chunk"
+          done
+
+          status=0
+          for t in $targets; do
+            echo "::group::libFuzzer: $t"
+            mkdir -p "artifacts/fuzz-corpus/$t"
+            cp artifacts/fuzz-seeds/"$t"/*.bin "artifacts/fuzz-corpus/$t/" 2>/dev/null || true
+            if ! STB_FUZZ_TARGET="$t" artifacts/libfuzzer/libfuzzer-dotnet \
+                  --target_path=dotnet --target_arg="$PWD/artifacts/fuzz-host/Stb.Managed.Fuzz.dll" \
+                  -timeout=10 -max_len=1048576 -max_total_time="$seconds" \
+                  -artifact_prefix="$PWD/artifacts/fuzz-crashes/$t-" \
+                  -print_final_stats=1 \
+                  "artifacts/fuzz-corpus/$t" \
+                  > "artifacts/fuzz-logs/$t.log" 2>&1; then
+              echo "libFuzzer reported a failure for target '$t' (see artifacts/fuzz-logs/$t.log)"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+
+          sizes=""
+          for t in $targets _probe _driver-help; do
+            sizes="$sizes $t=$(stat -c%s "artifacts/fuzz-logs/$t.log" 2>/dev/null || echo missing)"
+          done
+          echo "::error title=fuzz log sizes::$sizes"
+          exit $status
+
+      - name: Summarize coverage statistics
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob, os, re
+
+          rows = []
+          for log in sorted(glob.glob('artifacts/fuzz-logs/*.log')):
+              target = os.path.splitext(os.path.basename(log))[0]
+              if target.startswith('_'):
+                  continue
+              with open(log, encoding='utf-8', errors='replace') as f:
+                  text = f.read()
+              cov_ft = re.findall(r'cov:\s*(\d+)\s+ft:\s*(\d+)', text)
+              cov, ft = cov_ft[-1] if cov_ft else ('-', '-')
+              execs = re.findall(r'exec/s:\s*([\d.]+)', text)
+              done = re.search(r'Done\s+(\d+)\s+runs in\s+([\d.]+)\s*second', text)
+              seed = re.search(r'INFO: seed corpus: files:\s*(\d+)', text)
+              crashes = len(re.findall(r'ERROR:', text))
+              rows.append((target, seed.group(1) if seed else '-', cov, ft,
+                           done.group(1) if done else '-', execs[-1] if execs else '-', crashes))
+
+          lines = ['| target | seeds | cov | ft | runs | exec/s | errors |',
+                   '|---|---|---|---|---|---|---|']
+          lines += ['| {} | {} | {} | {} | {} | {} | {} |'.format(*r) for r in rows]
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('## Coverage-guided fuzzing results\n\n' + '\n'.join(lines) + '\n')
+          print('\n'.join(lines))
+          # Also mirror each row into an annotation, readable via the check-runs API.
+          for r in rows:
+              print('::notice title=fuzz stats {0}::target={0} seeds={1} cov={2} ft={3} runs={4} exec/s={5} errors={6}'.format(*r))
+          PY
+
+      - name: Upload fuzz logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-logs
+          path: artifacts/fuzz-logs/
+          if-no-files-found: error
+
+      - name: Upload crashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: artifacts/fuzz-crashes/
+          if-no-files-found: ignore
+
+      - name: Upload accumulated corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: artifacts/fuzz-corpus/
+          if-no-files-found: ignore

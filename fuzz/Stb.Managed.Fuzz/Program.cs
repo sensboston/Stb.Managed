@@ -1,6 +1,24 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using SharpFuzz;
 using Stb.Managed.Fuzz;
+
+// Instrumented assemblies dereference SharpFuzz.Common.Trace.SharedMem on every
+// instrumented branch. When the process is NOT started by a fuzzer driver nobody
+// points that pointer at a real trace map before the fuzzing runtime does, so any
+// instrumented code executed early (target resolution, corpus seed probing in
+// --mutate/--self-test/--export-seeds) would fault. Hand it a scratch buffer in
+// that case; the fuzzer runtimes (AFL, libfuzzer-dotnet) overwrite it with the
+// shared map once they are up.
+if (Environment.GetEnvironmentVariable("__LIBFUZZER_SHM_ID") is null
+    && Environment.GetEnvironmentVariable("__AFL_SHM_ID") is null
+    && Environment.GetEnvironmentVariable("SHARPFUZZ_SHARED_MEMORY") is null)
+{
+    unsafe
+    {
+        SharpFuzz.Common.Trace.SharedMem = (byte*)NativeMemory.AllocZeroed(256 * 1024);
+    }
+}
 
 if (args.Length >= 1 && string.Equals(args[0], "--self-test", StringComparison.Ordinal))
 {
@@ -17,11 +35,18 @@ if (args.Length >= 3 && string.Equals(args[0], "--mutate", StringComparison.Ordi
     return RunMutationLoop(targetName, seconds, seedDir, crashDir);
 }
 
+if (args.Length >= 4 && string.Equals(args[0], "--export-seeds", StringComparison.Ordinal))
+{
+    return ExportSeeds(args[1], args[2], args[3]);
+}
+
 if (args.Length >= 2 && string.Equals(args[0], "--afl", StringComparison.Ordinal))
 {
-    IFuzzTarget target = FuzzTargets.GetByName(args[1]);
+    // Resolve the target inside the callback: instrumented assemblies may only run
+    // after the fuzzing runtime has attached the trace shared memory.
     Fuzzer.OutOfProcess.Run(stream =>
     {
+        IFuzzTarget target = FuzzTargets.GetByName(args[1]);
         using var ms = new MemoryStream();
         stream.CopyTo(ms);
         target.Run(ms.GetBuffer().AsSpan(0, (int)ms.Length));
@@ -34,8 +59,10 @@ string libFuzzerTargetName =
         ? args[1]
         : Environment.GetEnvironmentVariable("STB_FUZZ_TARGET") ?? "image";
 
-IFuzzTarget libFuzzerTarget = FuzzTargets.GetByName(libFuzzerTargetName);
-Fuzzer.LibFuzzer.Run(span => libFuzzerTarget.Run(span));
+// Resolve the target inside the callback: instrumented assemblies may only run after
+// Fuzzer.LibFuzzer.Run has attached the trace shared memory (running instrumented
+// code first crashes with an AccessViolationException in the fuzzing child).
+Fuzzer.LibFuzzer.Run(span => FuzzTargets.GetByName(libFuzzerTargetName).Run(span));
 return 0;
 
 static int RunSelfTest(string? corpusDir)
@@ -73,6 +100,20 @@ static int RunSelfTest(string? corpusDir)
         Console.WriteLine($"  [OK] fuzz target '{target.Name}': {execs} inputs executed with 0 unhandled exceptions.");
     }
 
+    return 0;
+}
+
+static int ExportSeeds(string targetName, string corpusDir, string outDir)
+{
+    IFuzzTarget target = FuzzTargets.GetByName(targetName);
+    List<byte[]> seeds = BuildBuiltinSeeds(corpusDir, targetName);
+    Directory.CreateDirectory(outDir);
+    for (int i = 0; i < seeds.Count; ++i)
+    {
+        File.WriteAllBytes(Path.Combine(outDir, $"seed-{i:D5}.bin"), seeds[i]);
+    }
+
+    Console.WriteLine($"Exported {seeds.Count} seeds for target '{target.Name}' to '{outDir}'.");
     return 0;
 }
 
