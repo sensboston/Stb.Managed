@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4 - 2026-11-19
+
+- Maintenance release, no changes to the libraries.
+
 ## 1.0.3 - 2026-11-19
 
 - Resize: horizontal filters read the same fixed-width windows as stb (packed coefficients, clipped
