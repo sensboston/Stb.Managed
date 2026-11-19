@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using Stb.Managed.Internal;
 
 namespace Stb.Managed.Image.Internal;
@@ -2115,28 +2116,44 @@ internal static class PngDecoder
         int pixelCount,
         Span<byte> dest)
     {
-        if (palOutN == 3)
+        // The palette as 256 four-byte entries: a byte index never leaves the view, so the loops carry no
+        // range checks. Reading and writing whole entries keeps the byte order on any platform.
+        ReadOnlySpan<uint> pal = MemoryMarshal.Cast<byte, uint>(palette.AsSpan(0, 256 * 4));
+        ReadOnlySpan<byte> idx = indices.Slice(0, pixelCount);
+        if (palOutN == 4)
         {
-            for (int i = 0; i < pixelCount; i++)
+            Span<uint> d4 = MemoryMarshal.Cast<byte, uint>(dest.Slice(0, pixelCount * 4)).Slice(0, idx.Length);
+            for (int i = 0; i < idx.Length; i++)
             {
-                int n = indices[i] * 4;
-                int d = i * 3;
-                dest[d] = palette[n];
-                dest[d + 1] = palette[n + 1];
-                dest[d + 2] = palette[n + 2];
+                d4[i] = pal[idx[i]];
             }
+
+            return;
         }
-        else
+
+        // Three bytes per pixel: write each entry as four bytes and let the next pixel overwrite the fourth.
+        Span<byte> d3 = dest.Slice(0, pixelCount * 3);
+        int last = idx.Length - 1;
+        for (int i = 0; i < last; i++)
         {
-            for (int i = 0; i < pixelCount; i++)
-            {
-                int n = indices[i] * 4;
-                int d = i * 4;
-                dest[d] = palette[n];
-                dest[d + 1] = palette[n + 1];
-                dest[d + 2] = palette[n + 2];
-                dest[d + 3] = palette[n + 3];
-            }
+            uint e = pal[idx[i]];
+#if NET8_0_OR_GREATER
+            MemoryMarshal.Write(d3.Slice(i * 3, 4), in e);
+#else
+            MemoryMarshal.Write(d3.Slice(i * 3, 4), ref e);
+#endif
+        }
+
+        if (last >= 0)
+        {
+            uint e = pal[idx[last]];
+            Span<byte> bytes = stackalloc byte[4];
+#if NET8_0_OR_GREATER
+            MemoryMarshal.Write(bytes, in e);
+#else
+            MemoryMarshal.Write(bytes, ref e);
+#endif
+            bytes.Slice(0, 3).CopyTo(d3.Slice(last * 3, 3));
         }
     }
 
