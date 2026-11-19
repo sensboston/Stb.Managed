@@ -116,11 +116,11 @@ x64, an Intel N150, an Arm Neoverse-N1 server and GitHub-hosted x64 and Apple M1
 tables and per-operation charts are in [docs/benchmarks.md](docs/benchmarks.md).
 
 Out of the box (all cores, GPU when present) Stb.Managed is 1.8–2.7 times as fast as stb (geometric
-mean); on a single core, doing the same work, 1.45–1.7 times. Encoders, TrueType, rectangle packing,
-Perlin noise and, on x64, nearly all decoders are faster than stb on every machine. On a single core
-resize is still slower than stb's hand-written SIMD (0.5–0.9×), JPEG and palette PNG decoding on Arm
-are slower, and
-DXT compression loses on a few CPUs (0.7–0.9×); every case below 0.9× is listed in the report.
+mean); on a single core, doing the same work, 1.5–1.8 times. Encoders, TrueType, Perlin noise and
+nearly all decoders are faster than stb on every machine, including JPEG and PNG on Arm Neoverse. On a
+single core resize is still slower than stb's hand-written SIMD (0.5–0.85×), DXT compression loses on
+some CPUs (0.55–0.9×), and the Apple M1 runner is slower on small and progressive JPEGs; every case
+below 0.9× is listed in the report.
 
 Do not take our word for it: [bench/README.md](bench/README.md) explains, step by step, how to run
 the same comparison on your own machine (three commands after installing .NET, CMake and a C
