@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 1.0.3 - 2026-11-19
 
-- Resize: horizontal filters read the same fixed-width windows as stb (clipped reads, zero-weight slots),
-  so 8- and 16-bit output now equals stb byte for byte for every pixel layout, including one channel.
-- JPEG on Arm64: 4:2:0 chroma upsampling fused with YCbCr conversion and widened once per row; baseline
-  block decoder kept out of line (about 19% faster on Neoverse-N1, 3–4% on x64).
+- Resize: horizontal filters read the same fixed-width windows as stb (packed coefficients, clipped
+  reads, zero-weight slots), so 8-bit, 16-bit and float output now equals `stb_image_resize2` exactly
+  for every pixel layout, including one channel; an exact oracle test covers all of them.
+- JPEG on Arm64: 4:2:0 chroma upsampling fused with YCbCr conversion and widened once per row, baseline
+  block decoder kept out of line (about 20% faster on Neoverse-N1; 3–4% on x64).
+- PNG: palette expansion without per-byte range checks (about 40% faster for palette images on Arm64).
+- Resize: rows with one window length use a shorter inner path (about 3% on downscales).
+- Weekly coverage-guided fuzzing with libFuzzer in CI; the `--libfuzzer` and `--afl` harness modes now
+  attach the trace before any instrumented code runs.
 
 ## 1.0.2 - 2026-11-18
 
