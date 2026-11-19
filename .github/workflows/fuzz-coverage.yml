@@ -2,7 +2,6 @@ name: fuzz-coverage
 
 # Coverage-guided fuzzing: libFuzzer + SharpFuzz over every Stb.Managed fuzz target.
 # Runs manually (choose the target and the per-target time budget) and weekly.
-# Other workflows are intentionally untouched by this file.
 
 on:
   workflow_dispatch:
@@ -146,11 +145,6 @@ jobs:
             echo "::endgroup::"
           done
 
-          sizes=""
-          for t in $targets _probe _driver-help; do
-            sizes="$sizes $t=$(stat -c%s "artifacts/fuzz-logs/$t.log" 2>/dev/null || echo missing)"
-          done
-          echo "::error title=fuzz log sizes::$sizes"
           exit $status
 
       - name: Summarize coverage statistics
