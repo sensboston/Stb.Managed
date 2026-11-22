@@ -40,7 +40,9 @@ jobs:
           dotnet tool install --global SharpFuzz.CommandLine || true
           export PATH="$HOME/.dotnet/tools:$PATH"
           dotnet publish fuzz/Stb.Managed.Fuzz -c Release -o artifacts/fuzz-bin
-          for dll in artifacts/fuzz-bin/Stb.Managed.*.dll; do
+          for dll in artifacts/fuzz-bin/Stb.Managed.dll artifacts/fuzz-bin/Stb.Managed.*.dll; do
+            # The harness references SharpFuzz itself and is not instrumented.
+            if [ "$(basename "$dll")" = "Stb.Managed.Fuzz.dll" ]; then continue; fi
             echo "Instrumenting $(basename "$dll") with SharpFuzz..."
             sharpfuzz "$dll"
           done
