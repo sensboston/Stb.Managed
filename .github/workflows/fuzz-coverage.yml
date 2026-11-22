@@ -1,7 +1,7 @@
 name: fuzz-coverage
 
 # Coverage-guided fuzzing: libFuzzer + SharpFuzz over every Stb.Managed fuzz target.
-# Runs manually (choose the target and the per-target time budget) and weekly.
+# Runs manually: choose the target and the per-target time budget.
 
 on:
   workflow_dispatch:
@@ -14,8 +14,6 @@ on:
         description: 'libFuzzer time budget per target, in seconds'
         required: false
         default: '180'
-  schedule:
-    - cron: '0 6 * * 1' # every Monday 06:00 UTC (per-target budget defaults to 180 seconds)
 
 permissions:
   contents: read

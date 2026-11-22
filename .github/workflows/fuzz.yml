@@ -1,9 +1,6 @@
 name: fuzz
 
 on:
-  schedule:
-    # Weekly scheduled fuzzing run (Sunday 03:00 UTC)
-    - cron: "0 3 * * 0"
   workflow_dispatch:
     inputs:
       target:
